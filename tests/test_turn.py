@@ -97,7 +97,7 @@ async def test_execute_agy_returns_timeout_reply(monkeypatch: pytest.MonkeyPatch
     assert text == ""
 
 
-async def test_execute_agy_returns_closed_context_reply_for_denied_restricted_turn(
+async def test_execute_agy_returns_closed_context_reply_for_denied_environment_turn(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     async def fake_run_agy(**_: Any) -> AgyResult:
@@ -107,10 +107,30 @@ async def test_execute_agy_returns_closed_context_reply_for_denied_restricted_tu
     tg = _FakeTG()
     cs = ChatState(chat_dir="/tmp/chat")
     cfg = Config(telegram=TelegramConfig(bot_token="t", allowed_user_ids=[42]), agy=AgyConfig())
-    text, code = await execute_agy(tg, 42, _FakeMsg(), cs, cfg, "/usr/bin/agy")
+    text, code = await execute_agy(
+        tg, 42, _FakeMsg(text="What free disk space is on this VM?"), cs, cfg, "/usr/bin/agy"
+    )
 
     assert code == CLOSED_CONTEXT_BLOCKED_EXIT_CODE
     assert text == "I can't help with questions about the execution environment."
+
+
+async def test_execute_agy_returns_generic_reply_for_denied_non_environment_action(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    async def fake_run_agy(**_: Any) -> AgyResult:
+        return AgyResult("", 1, "agy result contains denied actions", "DENIED")
+
+    monkeypatch.setattr("src.turn.run_agy", fake_run_agy)
+    tg = _FakeTG()
+    cs = ChatState(chat_dir="/tmp/chat")
+    cfg = Config(telegram=TelegramConfig(bot_token="t", allowed_user_ids=[42]), agy=AgyConfig())
+    text, code = await execute_agy(
+        tg, 42, _FakeMsg(text="Create a JPEG picture of a lemon tree."), cs, cfg, "/usr/bin/agy"
+    )
+
+    assert code == CLOSED_CONTEXT_BLOCKED_EXIT_CODE
+    assert "restricted chat profile" in text
 
 
 async def test_private_chat_streams_drafts_without_typing_heartbeat(

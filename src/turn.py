@@ -11,8 +11,10 @@ from typing import TYPE_CHECKING, Callable
 from src.agy_runner import run_agy
 from src.closed_context import (
     CLOSED_CONTEXT_REPLY,
+    RESTRICTED_ACTION_REPLY,
     add_closed_context_instruction,
-    is_closed_context_denial,
+    is_execution_environment_request,
+    is_restricted_policy_denial,
 )
 from src.diagnostics import safe_failure_reason
 from src.worker_client import run_worker_job
@@ -116,9 +118,15 @@ async def execute_agy(
             except (asyncio.CancelledError, Exception):
                 pass
     elapsed = int((time.perf_counter() - turn_start) * 1000)
-    if is_closed_context_denial(result, cfg.access):
-        LOG.info("closed-context denial chat=%d ms=%d", chat_id, elapsed)
-        return CLOSED_CONTEXT_REPLY, CLOSED_CONTEXT_BLOCKED_EXIT_CODE
+    if is_restricted_policy_denial(result, cfg.access):
+        if is_execution_environment_request(msg.text):
+            LOG.info("closed-context denial chat=%d ms=%d", chat_id, elapsed)
+            return CLOSED_CONTEXT_REPLY, CLOSED_CONTEXT_BLOCKED_EXIT_CODE
+        # A denied image/file/tool action is not necessarily an environment
+        # request. Do not misleadingly claim that it was one, and do not leak
+        # raw CLI diagnostics to Telegram.
+        LOG.info("restricted action denied chat=%d ms=%d", chat_id, elapsed)
+        return RESTRICTED_ACTION_REPLY, CLOSED_CONTEXT_BLOCKED_EXIT_CODE
     if result.exit_code != 0:
         LOG.error(
             "turn failed chat=%d exit=%d ms=%d reason=%s",

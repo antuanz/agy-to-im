@@ -6,13 +6,29 @@ model ignores this text.
 """
 from __future__ import annotations
 
+import re
+
 from src.access import AccessPolicy
 from src.agy_runner import AgyResult
 from src.diagnostics import safe_failure_reason
 
 
 CLOSED_CONTEXT_REPLY = "I can't help with questions about the execution environment."
+RESTRICTED_ACTION_REPLY = (
+    "I couldn't complete that action in the current restricted chat profile. "
+    "I can still help with text and materials you provide here."
+)
 _RESTRICTED_PROFILES = frozenset({"sandbox", "workspace"})
+_ENVIRONMENT_REQUEST = re.compile(
+    r"\b("
+    r"execution environment|environment variables?|operating system|working director(?:y|ies)|"
+    r"filesystem|file system|process(?:es)?|credentials?|service instructions?|"
+    r"conversation history|free (?:disk )?space|disk (?:usage|space)|"
+    r"virtual machine|\bvm\b|(?:this|the) host|docker socket|"
+    r"(?:run|execute)\s+(?:ls|pwd|whoami|uname|df|ps|id|env)\b"
+    r")",
+    re.IGNORECASE,
+)
 
 _CLOSED_CONTEXT_INSTRUCTION = """# Closed Context Mode
 
@@ -50,10 +66,15 @@ def add_closed_context_instruction(prompt: str, access: AccessPolicy) -> str:
     return f"{_CLOSED_CONTEXT_INSTRUCTION}{prompt}"
 
 
-def is_closed_context_denial(result: AgyResult, access: AccessPolicy) -> bool:
+def is_restricted_policy_denial(result: AgyResult, access: AccessPolicy) -> bool:
     """Return true only for a restricted-profile tool/policy denial."""
     return (
         access.profile in _RESTRICTED_PROFILES
         and result.exit_code != 0
         and safe_failure_reason(result) == "worker permission policy rejected the turn"
     )
+
+
+def is_execution_environment_request(prompt: str) -> bool:
+    """Identify requests that fall under Closed Context Mode, not every tool use."""
+    return _ENVIRONMENT_REQUEST.search(prompt) is not None
