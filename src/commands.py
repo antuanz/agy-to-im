@@ -18,6 +18,7 @@ if TYPE_CHECKING:
 _DEFAULT_TOKEN = "_DEFAULT"
 _CONFIG_TOKEN = "_CONFIG"
 AGY_DEFAULT_LABEL = "Use agy default"
+_MODE_LABELS = {"plan": "Plan", "code": "Execution"}
 
 WELCOME_TEXT = (
     "Welcome! I'm your Antigravity bridge bot.\n\n"
@@ -72,6 +73,11 @@ def effective_execution_mode(cs: "ChatState", cfg: "Config") -> tuple[str, str]:
     return cfg.access.execution_mode, "server default"
 
 
+def _mode_label(mode: str) -> str:
+    """Translate the internal agy mode name into a Telegram-facing label."""
+    return _MODE_LABELS.get(mode, "Server-managed")
+
+
 def is_cancel_command(text: str) -> bool:
     """Recognize Telegram's optional @BotUsername command suffix."""
     command = text.strip().split(maxsplit=1)[0].lower() if text.strip() else ""
@@ -95,7 +101,7 @@ def render_status(cs: "ChatState", cfg: "Config") -> str:
         "🟢 Antigravity Bridge — Status\n"
         f"Model:      {model}  [{model_src}]\n"
         f"Access:     {cfg.access.label}  [{cfg.access.profile}]\n"
-        f"Execution:  {execution_mode}  [{execution_src}]\n"
+        f"Mode:       {_mode_label(execution_mode)}  [{execution_src}]\n"
         "\n"
         "This chat:\n"
         f"  Session:  {session}\n"
@@ -108,7 +114,7 @@ def _settings_keyboard(cs: "ChatState", cfg: "Config") -> InlineKeyboard:
     execution_mode, _ = effective_execution_mode(cs, cfg)
     return [
         [{"text": "Model", "callback_data": "nav:model"}],
-        [{"text": f"Execution: {execution_mode.title()}", "callback_data": "nav:mode"}],
+        [{"text": f"Mode: {_mode_label(execution_mode)}", "callback_data": "nav:mode"}],
         [{"text": "Reset session", "callback_data": "R"}],
         [{"text": "Refresh", "callback_data": "nav:settings"}],
     ]
@@ -153,11 +159,10 @@ def _mode_keyboard(cs: "ChatState", cfg: "Config") -> InlineKeyboard:
     """Offer only modes pre-authorised by the root-owned Sandbox policy."""
     rows: InlineKeyboard = []
     current, _ = effective_execution_mode(cs, cfg)
-    labels = {"plan": "Plan", "code": "Execution"}
     for mode in ("plan", "code"):
         if mode in cfg.access.allowed_execution_modes:
             marker = "● " if current == mode else "○ "
-            rows.append([{"text": marker + labels[mode], "callback_data": f"e:{mode}"}])
+            rows.append([{"text": marker + _mode_label(mode), "callback_data": f"e:{mode}"}])
     rows.append([{"text": "← Back to settings", "callback_data": "nav:settings"}])
     return rows
 
@@ -167,15 +172,15 @@ def _render_mode_picker(cs: "ChatState", cfg: "Config") -> BridgeReply:
     if cfg.access.profile != "sandbox":
         return BridgeReply(
             text=(
-                f"Execution is server-managed for {cfg.access.label}: {current}.\n\n"
+                f"Mode is server-managed for {cfg.access.label}: {_mode_label(current)}.\n\n"
                 "This control cannot change the active VM access profile."
             ),
             keyboard=[[{"text": "← Back to settings", "callback_data": "nav:settings"}]],
         )
     return BridgeReply(
         text=(
-            "⚙️ Choose execution mode for this chat\n\n"
-            f"Current: {current.title()}  [{source}]\n\n"
+            "⚙️ Choose a mode for this chat\n\n"
+            f"Current: {_mode_label(current)}  [{source}]\n\n"
             "Execution auto-approves tools only inside the existing Sandbox. "
             "It never changes VM access."
         ),
@@ -190,7 +195,7 @@ def _select_execution_mode(cs: "ChatState", cfg: "Config", requested: str) -> st
     if requested not in {"plan", "code"} or requested not in cfg.access.allowed_execution_modes:
         return "Mode not allowed"
     cs.mode = requested
-    return f"Execution: {requested.title()}"
+    return f"Mode: {_mode_label(requested)}"
 
 
 def _render_model_picker(
@@ -259,15 +264,15 @@ async def handle_text_command(
             return BridgeReply(f"⚠️ Unsupported model: {args}")
         return _render_model_picker(cs, cfg, models, discovery_error)
     if cmd == "/mode":
-        requested = args.lower()
+        requested = {"execution": "code"}.get(args.lower(), args.lower())
         if cfg.access.profile != "sandbox":
             return _render_mode_picker(cs, cfg)
         if not requested:
             return _render_mode_picker(cs, cfg)
         if requested not in {"plan", "code"}:
-            return BridgeReply("Use /mode, /mode plan, or /mode code.")
+            return BridgeReply("Use /mode, /mode plan, or /mode execution.")
         if requested not in cfg.access.allowed_execution_modes:
-            return BridgeReply(f"This server profile does not allow {requested} execution.")
+            return BridgeReply(f"This server profile does not allow {_mode_label(requested).lower()} mode.")
         toast = _select_execution_mode(cs, cfg, requested)
         return BridgeReply(f"{toast}. VM access remains {cfg.access.label}.")
     if cmd == "/reset":

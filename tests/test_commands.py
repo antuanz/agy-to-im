@@ -221,6 +221,8 @@ async def test_mode_command_shows_execution_buttons() -> None:
     assert [row[0]["callback_data"] for row in reply.keyboard] == [
         "e:plan", "e:code", "nav:settings",
     ]
+    assert reply.keyboard[0][0]["text"].endswith("Plan")
+    assert reply.keyboard[1][0]["text"].endswith("Execution")
 
 
 async def test_execution_button_changes_only_chat_mode() -> None:
@@ -235,8 +237,8 @@ async def test_execution_button_changes_only_chat_mode() -> None:
     )
     reply = handle_callback(cq, cs, _cfg(access=policy))
     assert cs.mode == "plan"
-    assert reply.toast == "Execution: Plan"
-    assert "Execution:  plan  [chat]" in reply.text
+    assert reply.toast == "Mode: Plan"
+    assert "Mode:       Plan  [chat]" in reply.text
 
 
 async def test_mode_command_changes_only_an_allowed_chat_preference() -> None:
@@ -247,13 +249,13 @@ async def test_mode_command_changes_only_an_allowed_chat_preference() -> None:
     )
     reply = await handle_text_command(_FakeMsg("/mode plan"), cs, _cfg(access=policy))
     assert reply is not None
-    assert "execution: plan" in reply.text.lower()
+    assert "mode: plan" in reply.text.lower()
     assert cs.mode == "plan"
 
 
 async def test_mode_command_rejects_mode_not_allowed_by_server_profile() -> None:
     cs = _state()
-    reply = await handle_text_command(_FakeMsg("/mode code"), cs, _cfg())
+    reply = await handle_text_command(_FakeMsg("/mode execution"), cs, _cfg())
     assert reply is not None
     assert "does not allow" in reply.text.lower()
     assert cs.mode == ""
@@ -269,4 +271,4 @@ async def test_mode_command_cannot_affect_host_profile() -> None:
     reply = await handle_text_command(_FakeMsg("/mode plan"), cs, _cfg(access=policy))
     assert reply is not None
     assert "server-managed" in reply.text.lower()
-    assert "Execution:  code" in (await handle_text_command(_FakeMsg("/status"), cs, _cfg(access=policy))).text
+    assert "Mode:       Execution" in (await handle_text_command(_FakeMsg("/status"), cs, _cfg(access=policy))).text
