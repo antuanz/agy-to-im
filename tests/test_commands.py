@@ -150,6 +150,23 @@ async def test_model_discovery_failure_blocks_typed_selection() -> None:
     assert cs.model is None
 
 
+async def test_stale_catalogue_still_validates_typed_selection() -> None:
+    cs = _state()
+    reply = await handle_text_command(
+        _FakeMsg("/model model-a"), cs, _cfg(), ("model-a",), "refresh failed"
+    )
+    assert reply is not None
+    assert cs.model == "model-a"
+
+
+async def test_model_picker_warns_when_using_stale_catalogue() -> None:
+    reply = await handle_text_command(
+        _FakeMsg("/model"), _state(), _cfg(), ("model-a",), "refresh failed"
+    )
+    assert reply is not None
+    assert "may be stale" in reply.text
+
+
 async def test_dynamic_button_is_revalidated_if_catalog_changes() -> None:
     cs = _state()
     picker = await handle_text_command(

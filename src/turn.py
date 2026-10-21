@@ -54,6 +54,7 @@ async def execute_agy(
     is_private = getattr(msg, "chat_type", "") == "private"
     hb_stop: asyncio.Event | None = None
     hb_task: asyncio.Task[None] | None = None
+    publisher: _DraftPublisher | None = None
     on_output = None
     if is_private:
         publisher = _DraftPublisher(tg, chat_id, secrets.randbits(63) or 1)
@@ -76,6 +77,8 @@ async def execute_agy(
         if result.exit_code == 0:
             asyncio.create_task(_compile_memory_layer(cs.chat_dir))
     finally:
+        if publisher is not None:
+            await publisher.close()
         if hb_stop is not None and hb_task is not None:
             hb_stop.set()
             hb_task.cancel()
@@ -98,7 +101,11 @@ async def execute_agy(
 
 
 class _DraftPublisher:
-    """Best-effort, cumulative rich drafts limited to about one update/second."""
+    """Capacity-one, best-effort draft publisher.
+
+    ``publish`` never waits for Telegram. The worker retains only the newest
+    cumulative value and applies the update interval before publishing it.
+    """
 
     def __init__(
         self,
@@ -115,18 +122,57 @@ class _DraftPublisher:
         self._interval = interval
         self._clock = clock
         self._last_sent = float("-inf")
+        self._latest: str | None = None
+        self._wake = asyncio.Event()
+        self._closed = False
+        self._task = asyncio.create_task(self._run())
 
     async def publish(self, cumulative_text: str) -> None:
-        now = self._clock()
-        if now - self._last_sent < self._interval:
+        if not self._closed:
+            self._latest = cumulative_text
+            self._wake.set()
+
+    async def close(self, *, timeout: float = 2.0) -> None:
+        """Stop the worker without letting a stuck draft request delay a turn."""
+        if self._closed:
             return
-        self._last_sent = now
+        self._closed = True
+        self._wake.set()
         try:
-            await self._tg.send_rich_message_draft(
-                self._chat_id, self._draft_id, cumulative_text
-            )
+            await asyncio.wait_for(asyncio.shield(self._task), timeout=timeout)
+        except asyncio.TimeoutError:
+            self._task.cancel()
+            await asyncio.gather(self._task, return_exceptions=True)
         except Exception as exc:
-            LOG.debug("draft update failed chat=%s: %s", self._chat_id, exc)
+            LOG.debug("draft publisher shutdown failed chat=%s: %s", self._chat_id, exc)
+
+    async def _run(self) -> None:
+        try:
+            while True:
+                await self._wake.wait()
+                self._wake.clear()
+                if self._closed and self._latest is None:
+                    return
+                delay = self._last_sent + self._interval - self._clock()
+                if delay > 0:
+                    await asyncio.sleep(delay)
+                text = self._latest
+                self._latest = None
+                if text is None:
+                    if self._closed:
+                        return
+                    continue
+                try:
+                    await self._tg.send_rich_message_draft(
+                        self._chat_id, self._draft_id, text
+                    )
+                    self._last_sent = self._clock()
+                except Exception as exc:
+                    LOG.debug("draft update failed chat=%s: %s", self._chat_id, exc)
+                if self._closed:
+                    return
+        except asyncio.CancelledError:
+            return
 
 
 async def _heartbeat(

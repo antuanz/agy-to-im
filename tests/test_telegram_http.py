@@ -134,3 +134,20 @@ async def test_send_rich_draft_uses_stable_id_without_stop_button(
     assert payload["draft_id"] == 987654
     assert "<strong>partial</strong>" in payload["rich_message"]["html"]
     assert "can_stop" not in payload
+
+
+async def test_rich_draft_uses_newest_chunk_when_answer_exceeds_limit(
+    httpx_mock: HTTPXMock,
+) -> None:
+    httpx_mock.add_response(
+        url="https://api.telegram.org/botTOKEN/sendRichMessageDraft",
+        method="POST",
+        json={"ok": True, "result": True},
+    )
+    text = "first chunk\n" + ("x" * 30_000) + "\nnewest tail"
+    async with TelegramClient("TOKEN") as tg:
+        await tg.send_rich_message_draft(10, 1, text)
+    payload = json.loads(httpx_mock.get_requests()[0].content)
+    html = payload["rich_message"]["html"]
+    assert "newest tail" in html
+    assert "first chunk" not in html

@@ -222,10 +222,14 @@ class TelegramClient:
         chunks = chunk_markdown(markdown)
         if not chunks:
             return
+        # A draft is one ephemeral message. Once the answer grows beyond the
+        # rich-message limit, showing the tail is more useful than repeatedly
+        # redrawing the unchanged first chunk. The permanent reply still sends
+        # every chunk.
         payload = {
             "chat_id": chat_id,
             "draft_id": draft_id,
-            "rich_message": {"html": markdown_to_safe_html(chunks[0])},
+            "rich_message": {"html": markdown_to_safe_html(chunks[-1])},
         }
         r = await self._client.post(
             f"{self._base}/sendRichMessageDraft", json=payload

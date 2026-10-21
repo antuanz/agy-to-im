@@ -123,7 +123,7 @@ async def _do_turn(
     selected_model = effective_model_value(cs, cfg)
     if selected_model:
         snapshot = await catalog.get()
-        if snapshot.error:
+        if snapshot.error and not snapshot.models:
             await tg.send_message(
                 msg.chat_id,
                 f"⚠️ Cannot validate saved model {selected_model!r}: "
@@ -204,8 +204,12 @@ async def _process_text(
         await tg.send_message(msg.chat_id, status)
         return
 
-    await _do_turn(msg, tg, cs, cfg, agy_path, catalog)
-    _QUEUE.complete()
+    try:
+        await _do_turn(msg, tg, cs, cfg, agy_path, catalog)
+    except Exception:
+        LOG.exception("turn crashed chat=%s", msg.chat_id)
+    finally:
+        _QUEUE.complete()
 
     while True:
         next_item = _QUEUE.next()
@@ -213,9 +217,17 @@ async def _process_text(
             break
         nxt_msg, nxt_fut = next_item
         nxt_cs = _ensure_chat_state(state, nxt_msg.chat_id, chats_root)
-        await _do_turn(nxt_msg, tg, nxt_cs, cfg, agy_path, catalog)
-        _QUEUE.complete()
-        nxt_fut.set_result(None)
+        try:
+            await _do_turn(nxt_msg, tg, nxt_cs, cfg, agy_path, catalog)
+        except Exception as exc:
+            LOG.exception("queued turn crashed chat=%s", nxt_msg.chat_id)
+            if not nxt_fut.done():
+                nxt_fut.set_exception(exc)
+        else:
+            if not nxt_fut.done():
+                nxt_fut.set_result(None)
+        finally:
+            _QUEUE.complete()
 
     save_state(state_path, state)
 

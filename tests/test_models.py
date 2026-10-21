@@ -1,6 +1,10 @@
 """Tests for dynamic agy model discovery and caching."""
 from __future__ import annotations
 
+import os
+import stat
+import sys
+from pathlib import Path
 from unittest.mock import AsyncMock
 
 from src.models import ModelCatalog, ModelSnapshot, parse_model_slugs
@@ -32,7 +36,7 @@ async def test_success_is_cached_for_five_minutes() -> None:
     assert catalog._discover.await_count == 1  # type: ignore[attr-defined]
 
 
-async def test_expired_cache_failure_is_not_used_or_cached() -> None:
+async def test_expired_cache_failure_preserves_last_successful_catalogue() -> None:
     now = [0.0]
     catalog = ModelCatalog("agy", clock=lambda: now[0])
     catalog._discover = AsyncMock(  # type: ignore[method-assign]
@@ -45,8 +49,9 @@ async def test_expired_cache_failure_is_not_used_or_cached() -> None:
     assert (await catalog.get()).models == ("model-a",)
     now[0] = 301.0
     failed = await catalog.get()
-    assert failed.models == ()
+    assert failed.models == ("model-a",)
     assert failed.error == "offline"
+    assert failed.stale is True
     assert (await catalog.get()).models == ("model-b",)
 
 
@@ -55,3 +60,27 @@ async def test_initial_failure_returns_actionable_error() -> None:
     result = await catalog.get()
     assert result.models == ()
     assert "could not run agy models" in result.error.lower()
+
+
+def _fake_models(tmp_path: Path) -> Path:
+    script = tmp_path / "fake_models.py"
+    script.write_text(
+        "import sys\n"
+        "sys.stdout.write('x' * 300000)\n"
+        "sys.stdout.flush()\n"
+    )
+    if os.name == "nt":
+        wrapper = tmp_path / "agy.cmd"
+        wrapper.write_text(f'@"{sys.executable}" "{script}" %*\n')
+    else:
+        wrapper = tmp_path / "agy"
+        wrapper.write_text(f'#!/bin/sh\nexec "{sys.executable}" "{script}" "$@"\n')
+        wrapper.chmod(wrapper.stat().st_mode | stat.S_IXUSR)
+    return wrapper
+
+
+async def test_model_discovery_bounds_oversized_output(tmp_path: Path) -> None:
+    catalog = ModelCatalog(str(_fake_models(tmp_path)))
+    result = await catalog.get()
+    assert result.models == ()
+    assert "size limit" in result.error

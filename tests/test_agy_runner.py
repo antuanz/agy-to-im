@@ -40,9 +40,19 @@ def _fake_agy(tmp_path: Path) -> Path:
                 print(json.dumps({"event":"result","result":{"status":"ERROR","error":"failed"}}), flush=True)
             elif case == "no_result":
                 print("not json", flush=True)
+            elif case == "malformed":
+                print("not json", flush=True)
+                print(json.dumps({"event":"result","result":{"status":"SUCCESS","response":"ignored"}}), flush=True)
+            elif case == "denied":
+                print(json.dumps({"event":"result","result":{"status":"SUCCESS","response":"ignored","denied_actions":["write"]}}), flush=True)
+            elif case == "oversized":
+                print("x" * 600000, flush=True)
+                print(json.dumps({"event":"result","result":{"status":"SUCCESS","response":"ignored"}}), flush=True)
+            elif case == "stderr_oversized":
+                sys.stderr.write("x" * 70000); sys.stderr.flush()
+                print(json.dumps({"event":"result","result":{"status":"SUCCESS","response":"ignored"}}), flush=True)
             else:
                 sys.stderr.write("private diagnostic\\n")
-                sys.stdout.write("malformed\\n")
                 event = json.dumps({"event":"step_update","step_update":{"step_type":"tool","tool_info":{"output":"SECRET TOOL"}}}) + "\\n"
                 sys.stdout.write(event)
                 delta = json.dumps({"event":"step_update","step_update":{"step_type":"agent_response","text_delta":"hello "}}) + "\\n"
@@ -50,7 +60,7 @@ def _fake_agy(tmp_path: Path) -> Path:
                 sys.stdout.write(delta[:middle]); sys.stdout.flush(); time.sleep(0.02)
                 sys.stdout.write(delta[middle:]); sys.stdout.flush()
                 print(json.dumps({"event":"step_update","step_update":{"step_type":"agent_response","text_delta":"world"}}), flush=True)
-                print(json.dumps({"event":"result","result":{"status":"SUCCESS","response":"must not be used"}}), flush=True)
+                print(json.dumps({"event":"result","result":{"status":"SUCCESS","response":"terminal response"}}), flush=True)
             """
         )
     )
@@ -91,7 +101,7 @@ async def test_streams_only_agent_text_and_sends_user_event(
         on_output=on_output,
     )
 
-    assert result.text == "hello world"
+    assert result.text == "terminal response"
     assert result.exit_code == 0
     assert result.stderr.strip() == "private diagnostic"
     assert result.status == "SUCCESS"
@@ -140,7 +150,13 @@ def test_build_args_includes_exact_selected_model() -> None:
     assert "-p" not in args
 
 
-@pytest.mark.parametrize("case,status", [("non_success", "ERROR"), ("no_result", "INVALID")])
+@pytest.mark.parametrize(
+    "case,status", [
+        ("non_success", "ERROR"), ("no_result", "INVALID"),
+        ("malformed", "INVALID"), ("denied", "INVALID"),
+        ("oversized", "INVALID"), ("stderr_oversized", "INVALID"),
+    ],
+)
 async def test_rejects_non_success_or_missing_terminal_result(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
@@ -155,6 +171,19 @@ async def test_rejects_non_success_or_missing_terminal_result(
     )
     assert result.exit_code != 0
     assert result.status == status
+
+
+async def test_terminal_result_is_authoritative_over_deltas(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    agy = _fake_agy(tmp_path)
+    _env_for_fake(monkeypatch, tmp_path, "success")
+    result = await run_agy(
+        "x", chat_dir=str(tmp_path), has_session=False, model="", mode="code",
+        agy_path=str(agy),
+    )
+    assert result.text == "terminal response"
+    assert result.text != "hello world"
 
 
 async def test_timeout_terminates_process_tree(

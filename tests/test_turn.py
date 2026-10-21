@@ -37,6 +37,20 @@ class _FakeTG:
             raise RuntimeError("draft rejected")
 
 
+class _SlowDraftTG(_FakeTG):
+    def __init__(self) -> None:
+        super().__init__()
+        self.started = asyncio.Event()
+        self.release = asyncio.Event()
+
+    async def send_rich_message_draft(
+        self, chat_id: int, draft_id: int, markdown: str
+    ) -> None:
+        self.drafts.append((chat_id, draft_id, markdown))
+        self.started.set()
+        await self.release.wait()
+
+
 async def test_execute_agy_returns_reply_and_records_metrics(monkeypatch: pytest.MonkeyPatch) -> None:
     calls: list[dict[str, Any]] = []
 
@@ -78,6 +92,7 @@ async def test_private_chat_streams_drafts_without_typing_heartbeat(
 ) -> None:
     async def fake_run_agy(**kwargs: Any) -> AgyResult:
         await kwargs["on_output"]("partial")
+        await asyncio.sleep(0)
         return AgyResult("complete", 0, "", "SUCCESS")
 
     monkeypatch.setattr("src.turn.run_agy", fake_run_agy)
@@ -95,15 +110,15 @@ async def test_private_chat_streams_drafts_without_typing_heartbeat(
     assert tg.drafts[0][2] == "partial"
 
 
-async def test_draft_publisher_throttles_and_keeps_one_id(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    times = iter((0.0, 0.5, 1.1))
+async def test_draft_publisher_throttles_and_keeps_one_id() -> None:
     tg = _FakeTG()
-    publisher = _DraftPublisher(tg, 42, 777, clock=lambda: next(times))
+    publisher = _DraftPublisher(tg, 42, 777, interval=0.03)
     await publisher.publish("a")
+    await asyncio.sleep(0.01)
     await publisher.publish("ab")
     await publisher.publish("abc")
+    await asyncio.sleep(0.04)
+    await publisher.close()
     assert tg.drafts == [(42, 777, "a"), (42, 777, "abc")]
 
 
@@ -112,4 +127,18 @@ async def test_draft_failure_does_not_escape() -> None:
     tg.fail_drafts = True
     publisher = _DraftPublisher(tg, 42, 888, interval=0)
     await publisher.publish("still running")
+    await asyncio.sleep(0)
+    await publisher.close()
     assert tg.drafts == [(42, 888, "still running")]
+
+
+async def test_slow_draft_request_never_backpressures_publisher() -> None:
+    tg = _SlowDraftTG()
+    publisher = _DraftPublisher(tg, 42, 999, interval=0)
+    await publisher.publish("first")
+    await asyncio.wait_for(tg.started.wait(), timeout=0.2)
+    start = asyncio.get_running_loop().time()
+    await publisher.publish("second")
+    assert asyncio.get_running_loop().time() - start < 0.05
+    tg.release.set()
+    await publisher.close()

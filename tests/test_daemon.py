@@ -10,9 +10,11 @@ import pytest
 
 from src.agy_runner import AgyResult
 from src.config import AgyConfig, Config, TelegramConfig
+import src.daemon as daemon_mod
 from src.daemon import DaemonInfo, run
 from src.models import ModelSnapshot
 from src.state import ChatState, State, load_state, save_state
+from src.telegram import InboundMessage
 
 
 pytestmark = pytest.mark.asyncio
@@ -308,3 +310,84 @@ async def test_stale_saved_model_blocks_turn_without_fallback(
     assert "no longer available" in tg.sent_messages[0][1]
     persisted = load_state(state_path, chats_root)
     assert persisted.chats[10].model == "retired-model"
+
+
+async def test_stale_cached_catalogue_allows_previously_validated_model(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    state_path = tmp_path / "state.json"
+    chats_root = tmp_path / "chats"
+    chat_dir = chats_root / "10"
+    save_state(
+        state_path,
+        State(chats={10: ChatState(chat_dir=str(chat_dir), model="model-a")}),
+    )
+    calls = 0
+
+    async def successful_agy(*args: Any, **kwargs: Any) -> tuple[str, int]:
+        nonlocal calls
+        calls += 1
+        return "ok", 0
+
+    class _Catalog:
+        def __init__(self, _: str) -> None:
+            pass
+
+        async def get(self) -> ModelSnapshot:
+            return ModelSnapshot(("model-a",), "refresh failed", stale=True)
+
+    monkeypatch.setattr("src.daemon.execute_agy", successful_agy)
+    monkeypatch.setattr("src.daemon.ModelCatalog", _Catalog)
+    tg = _FakeTelegram([[_msg("hello", update_id=601)]], [], [])
+    stop = asyncio.Event()
+    asyncio.get_running_loop().call_later(0.2, stop.set)
+    await run(
+        cfg=_cfg(), state_path=state_path, chats_root=chats_root, tg=tg,
+        agy_path="agy", info=DaemonInfo("@bot", 0.0, "1.0"), stop_event=stop,
+    )
+    assert calls == 1
+    assert tg.sent_messages[-1] == (10, "ok")
+
+
+async def test_turn_queue_is_completed_when_active_turn_raises(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    daemon_mod._QUEUE.active = False
+    daemon_mod._QUEUE.pending.clear()
+    daemon_mod._QUEUE.owner_chat_id = 999
+    started = asyncio.Event()
+    release = asyncio.Event()
+    calls = 0
+
+    async def flaky_turn(*_: Any) -> None:
+        nonlocal calls
+        calls += 1
+        if calls == 1:
+            started.set()
+            await release.wait()
+            raise RuntimeError("unexpected turn failure")
+
+    class _Catalog:
+        async def get(self) -> ModelSnapshot:
+            return ModelSnapshot(())
+
+    monkeypatch.setattr("src.daemon._do_turn", flaky_turn)
+    tg = _FakeTelegram([], [], [])
+    state = State()
+    first = InboundMessage(1, 10, 42, "first", "private")
+    second = InboundMessage(2, 11, 42, "second", "private")
+    task = asyncio.create_task(
+        daemon_mod._process_text(
+            first, tg, state, tmp_path / "state.json", tmp_path / "chats", _cfg(),
+            "agy", DaemonInfo("@bot", 0.0, "1.0"), _Catalog(),
+        )
+    )
+    await asyncio.wait_for(started.wait(), timeout=0.2)
+    await daemon_mod._process_text(
+        second, tg, state, tmp_path / "state.json", tmp_path / "chats", _cfg(),
+        "agy", DaemonInfo("@bot", 0.0, "1.0"), _Catalog(),
+    )
+    release.set()
+    await task
+    assert daemon_mod._QUEUE.active is False
+    assert daemon_mod._QUEUE.pending == []

@@ -13,6 +13,8 @@ from src.processes import process_group_options, terminate_process_group
 
 MODEL_CACHE_TTL_S = 300.0
 MODEL_DISCOVERY_TIMEOUT_S = 10.0
+MODEL_STDOUT_CAP_BYTES = 262_144
+MODEL_STDERR_CAP_BYTES = 65_536
 _ANSI_RE = re.compile(r"\x1b\[[0-?]*[ -/]*[@-~]")
 _MODEL_LINE_RE = re.compile(
     r"^\s*([A-Za-z0-9._][A-Za-z0-9._-]*)(?:(?:[ \t]{2,})\S.*)?\s*$"
@@ -23,6 +25,7 @@ _MODEL_LINE_RE = re.compile(
 class ModelSnapshot:
     models: tuple[str, ...]
     error: str = ""
+    stale: bool = False
 
 
 def parse_model_slugs(output: str) -> tuple[str, ...]:
@@ -71,6 +74,12 @@ class ModelCatalog:
             if snapshot.models:
                 self._models = snapshot.models
                 self._cached_at = self._clock()
+                return snapshot
+            if self._models is not None:
+                # An old, successfully validated catalogue is safer than
+                # needlessly blocking a selected model during a transient CLI
+                # failure. Keep attempting refreshes on future calls.
+                return ModelSnapshot(self._models, snapshot.error, stale=True)
             return snapshot
 
     async def _discover(self) -> ModelSnapshot:
@@ -80,14 +89,19 @@ class ModelCatalog:
                 "models",
                 stdout=asyncio.subprocess.PIPE,
                 stderr=asyncio.subprocess.PIPE,
+                limit=MODEL_STDOUT_CAP_BYTES + 1,
                 **process_group_options(),
             )
         except OSError as exc:
             return ModelSnapshot((), f"could not run agy models: {exc}")
 
         try:
-            stdout, stderr = await asyncio.wait_for(
-                proc.communicate(), timeout=MODEL_DISCOVERY_TIMEOUT_S
+            stdout_result, stderr_result, _ = await asyncio.wait_for(
+                asyncio.gather(
+                    _read_capped(proc.stdout, MODEL_STDOUT_CAP_BYTES),
+                    _read_capped(proc.stderr, MODEL_STDERR_CAP_BYTES),
+                    proc.wait(),
+                ), timeout=MODEL_DISCOVERY_TIMEOUT_S
             )
         except asyncio.TimeoutError:
             await terminate_process_group(proc)
@@ -96,12 +110,35 @@ class ModelCatalog:
             await terminate_process_group(proc)
             raise
 
+        stdout, stdout_exceeded = stdout_result
+        _, stderr_exceeded = stderr_result
+        if stdout_exceeded or stderr_exceeded:
+            return ModelSnapshot((), "agy models output exceeded size limit")
+
         if proc.returncode != 0:
             # Never surface CLI diagnostics through Telegram; they may contain
             # local paths or authentication details.
-            del stderr
             return ModelSnapshot((), f"agy models exited {proc.returncode}")
         models = parse_model_slugs(stdout.decode("utf-8", errors="replace"))
         if not models:
             return ModelSnapshot((), "agy models returned no model slugs")
         return ModelSnapshot(models)
+
+
+async def _read_capped(
+    stream: asyncio.StreamReader | None, cap: int
+) -> tuple[bytes, bool]:
+    if stream is None:
+        return b"", False
+    captured = bytearray()
+    exceeded = False
+    while True:
+        block = await stream.read(8192)
+        if not block:
+            break
+        room = cap - len(captured)
+        if room > 0:
+            captured.extend(block[:room])
+        if len(block) > room:
+            exceeded = True
+    return bytes(captured), exceeded

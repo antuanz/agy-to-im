@@ -163,7 +163,7 @@ def _render_model_picker(
     selected = effective_model_value(cs, cfg)
     notices: list[str] = []
     if discovery_error:
-        notices.append(f"⚠️ Model discovery unavailable: {discovery_error}")
+        notices.append(f"⚠️ Model list may be stale: {discovery_error}")
     elif selected and selected not in models:
         notices.append(
             f"⚠️ Saved selection {selected!r} is no longer available. "
@@ -214,13 +214,13 @@ async def handle_text_command(
             if args in {"default", "agy-default"}:
                 cs.model = ""
                 return BridgeReply(f"🤖 Model set to {AGY_DEFAULT_LABEL}")
+            if args in models:
+                cs.model = args
+                return BridgeReply(f"🤖 Model set to {args}")
             if discovery_error:
                 return BridgeReply(
                     f"⚠️ Cannot validate model right now: {discovery_error}"
                 )
-            if args in models:
-                cs.model = args
-                return BridgeReply(f"🤖 Model set to {args}")
             return BridgeReply(f"⚠️ Unsupported model: {args}")
         return _render_model_picker(cs, cfg, models, discovery_error)
     if cmd == "/mode":
@@ -295,11 +295,11 @@ def handle_callback(
         elif choice == _CONFIG_TOKEN and cfg.agy.model:
             cs.model = None
             toast = "Using configured default"
-        elif discovery_error:
-            toast = "Model list unavailable"
         elif choice in models:
             cs.model = choice
             toast = f"Model: {choice}"
+        elif discovery_error:
+            toast = "Model list unavailable"
         else:
             toast = "Unknown choice"
         rep = _render_settings(cs, cfg)
