@@ -17,6 +17,7 @@ def test_restricted_profile_prefixes_closed_context_instruction() -> None:
 
     assert prompt.endswith("# User task\nExplain sockets.")
     assert "# Closed Context Mode" in prompt
+    assert "bridge uploads newly created eligible files" in prompt
 
 
 def test_host_profile_does_not_add_closed_context_instruction() -> None:

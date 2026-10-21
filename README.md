@@ -73,6 +73,12 @@ or files that exceed the limits. If the comparison cannot be completed safely,
 it sends no generated file. This feature does not make arbitrary VM paths available: the worker's
 filesystem boundary still limits it to the chat workspace.
 
+For restricted profiles, the fixed agent instruction also tells the model to create deliverables
+in the chat workspace rather than link to a local path. It must not claim that Telegram cannot
+receive a created file. If an image provider is quota-limited or unavailable, the model should say
+so briefly and continue with any useful text-only response; the bridge cannot bypass provider
+quotas or create an image that the provider did not produce.
+
 Restricted profiles also prepend a fixed **Closed Context Mode** instruction to every turn. It
 limits the conversation to user-provided task materials and tells the agent not to inspect or
 disclose execution-environment details. This is a usability layer, not a replacement for the OS
