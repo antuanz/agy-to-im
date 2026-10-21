@@ -7,12 +7,20 @@ import logging
 import os
 import signal
 import stat
+import time
 from pathlib import Path
 from typing import Any
 
 from src.access import AccessPolicyError, load_access_policy
 from src.agy_runner import AgyResult, _child_environment, run_agy
-from src.models import MODEL_DISCOVERY_TIMEOUT_S, MODEL_STDERR_CAP_BYTES, MODEL_STDOUT_CAP_BYTES, _read_capped, parse_model_slugs
+from src.models import (
+    MODEL_CACHE_TTL_S,
+    MODEL_DISCOVERY_TIMEOUT_S,
+    MODEL_STDERR_CAP_BYTES,
+    MODEL_STDOUT_CAP_BYTES,
+    _read_capped,
+    parse_model_slugs,
+)
 from src.processes import process_group_options, terminate_process_group
 from src.state import is_valid_model
 
@@ -21,6 +29,13 @@ LOG = logging.getLogger("antigravity_telegram_worker")
 _LINE_LIMIT = 1_048_576
 _MAX_PROMPT_BYTES = 262_144
 _WORKER_LOCK = asyncio.Lock()
+# The installer asks the already-running worker to list models before it
+# enables the Telegram controller. Retain that verified result: otherwise the
+# first user message needlessly performs a second network-dependent lookup.
+# Only successful CLI results enter this cache; a later failed refresh returns
+# the last known catalogue with an explicit stale warning.
+_MODEL_CACHE: tuple[str, ...] = ()
+_MODEL_CACHE_AT = 0.0
 
 
 def _socket_path() -> Path:
@@ -80,6 +95,10 @@ async def _send(writer: asyncio.StreamWriter, event: dict[str, object]) -> None:
 
 
 async def _discover_models() -> tuple[tuple[str, ...], str]:
+    global _MODEL_CACHE, _MODEL_CACHE_AT
+    if _MODEL_CACHE and time.monotonic() - _MODEL_CACHE_AT < MODEL_CACHE_TTL_S:
+        return _MODEL_CACHE, ""
+
     agy_path = os.environ.get("AGY_BIN", "agy")
     try:
         proc = await asyncio.create_subprocess_exec(
@@ -88,7 +107,7 @@ async def _discover_models() -> tuple[tuple[str, ...], str]:
             limit=MODEL_STDOUT_CAP_BYTES + 1, **process_group_options(),
         )
     except OSError:
-        return (), "worker could not run agy models"
+        return _stale_models("worker could not run agy models")
     try:
         stdout_result, stderr_result, _ = await asyncio.wait_for(
             asyncio.gather(
@@ -98,13 +117,22 @@ async def _discover_models() -> tuple[tuple[str, ...], str]:
         )
     except asyncio.TimeoutError:
         await terminate_process_group(proc)
-        return (), "worker model discovery timed out"
+        return _stale_models("worker model discovery timed out")
     stdout, stdout_exceeded = stdout_result
     _, stderr_exceeded = stderr_result
     if stdout_exceeded or stderr_exceeded or proc.returncode != 0:
-        return (), "worker model discovery failed"
+        return _stale_models("worker model discovery failed")
     models = parse_model_slugs(stdout.decode("utf-8", errors="replace"))
-    return (models, "") if models else ((), "worker returned no models")
+    if not models:
+        return _stale_models("worker returned no models")
+    _MODEL_CACHE = models
+    _MODEL_CACHE_AT = time.monotonic()
+    return models, ""
+
+
+def _stale_models(error: str) -> tuple[tuple[str, ...], str]:
+    """Keep a previously verified catalogue usable through a failed refresh."""
+    return (_MODEL_CACHE, error) if _MODEL_CACHE else ((), error)
 
 
 async def _run_request(request: dict[str, Any], writer: asyncio.StreamWriter) -> None:

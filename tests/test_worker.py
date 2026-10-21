@@ -3,6 +3,8 @@ from __future__ import annotations
 
 from pathlib import Path
 
+import src.worker as worker
+from src.models import MODEL_CACHE_TTL_S
 from src.worker import _valid_chat_dir
 
 
@@ -20,3 +22,33 @@ def test_worker_translates_only_shared_controller_chat_paths(
 
     assert _valid_chat_dir(str(controller_root / "42")) == str(worker_root / "42")
     assert _valid_chat_dir(str(outside)) is None
+
+
+async def test_worker_reuses_verified_model_catalogue_within_ttl(monkeypatch) -> None:
+    monkeypatch.setattr(worker, "_MODEL_CACHE", ("gemini-3.8-flash-medium",))
+    monkeypatch.setattr(worker, "_MODEL_CACHE_AT", 100.0)
+    monkeypatch.setattr(worker.time, "monotonic", lambda: 100.0 + MODEL_CACHE_TTL_S - 1)
+
+    async def should_not_run(*_args, **_kwargs):
+        raise AssertionError("a fresh agy models process should not be started")
+
+    monkeypatch.setattr(worker.asyncio, "create_subprocess_exec", should_not_run)
+    models, error = await worker._discover_models()
+
+    assert models == ("gemini-3.8-flash-medium",)
+    assert error == ""
+
+
+async def test_worker_uses_last_verified_models_after_refresh_failure(monkeypatch) -> None:
+    monkeypatch.setattr(worker, "_MODEL_CACHE", ("gemini-3.8-flash-medium",))
+    monkeypatch.setattr(worker, "_MODEL_CACHE_AT", 100.0)
+    monkeypatch.setattr(worker.time, "monotonic", lambda: 100.0 + MODEL_CACHE_TTL_S + 1)
+
+    async def unavailable(*_args, **_kwargs):
+        raise OSError("not available")
+
+    monkeypatch.setattr(worker.asyncio, "create_subprocess_exec", unavailable)
+    models, error = await worker._discover_models()
+
+    assert models == ("gemini-3.8-flash-medium",)
+    assert error == "worker could not run agy models"

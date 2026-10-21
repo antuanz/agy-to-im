@@ -64,3 +64,24 @@ async def test_worker_model_error_is_not_silently_treated_as_empty(tmp_path: Pat
         await server.wait_closed()
     assert models == ()
     assert error == "worker unavailable"
+
+
+async def test_worker_model_warning_is_preserved_with_stale_models(tmp_path: Path) -> None:
+    socket = tmp_path / "worker.sock"
+
+    async def handler(reader: asyncio.StreamReader, writer: asyncio.StreamWriter) -> None:
+        assert json.loads(await reader.readline()) == {"op": "models"}
+        writer.write(
+            b'{"type":"models","models":["model-a"],"error":"worker model discovery timed out"}\n'
+        )
+        await writer.drain()
+        writer.close()
+
+    server = await asyncio.start_unix_server(handler, path=str(socket))
+    try:
+        models, error = await discover_worker_models(str(socket), timeout=1)
+    finally:
+        server.close()
+        await server.wait_closed()
+    assert models == ("model-a",)
+    assert error == "worker model discovery timed out"

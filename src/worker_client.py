@@ -107,7 +107,11 @@ async def discover_worker_models(socket_path: str, *, timeout: float = 15.0) -> 
             return (), "worker returned invalid model data"
         if not models:
             return (), error if isinstance(error, str) and error else "worker returned no models"
-        return tuple(models), ""
+        # A non-empty catalogue is still safe to use if the worker had to fall
+        # back to its last verified value. Preserve the warning so `/model`
+        # can say that the list may be stale, while saved valid selections do
+        # not block an otherwise usable turn.
+        return tuple(models), error if isinstance(error, str) else ""
     finally:
         writer.close()
         try:
