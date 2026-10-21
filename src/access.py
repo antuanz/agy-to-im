@@ -8,12 +8,12 @@ from __future__ import annotations
 
 import os
 from collections.abc import Mapping
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from pathlib import Path
 
 
 _PROFILES = frozenset({"sandbox", "workspace", "host"})
-_HOST_EXECUTION_MODES = frozenset({"plan", "code"})
+_EXECUTION_MODES = frozenset({"plan", "code"})
 _POLICY_PATH = Path("/etc/agy-telegram-bridge/access.env")
 
 
@@ -28,11 +28,18 @@ class AccessPolicy:
     profile: str = "sandbox"
     execution_mode: str = "plan"
     label: str = "Sandbox"
+    allowed_execution_modes: frozenset[str] = frozenset({"plan"})
 
     @property
     def permits_unattended_tools(self) -> bool:
-        """Only the administrator-selected Host profile may auto-approve tools."""
-        return self.profile == "host" and self.execution_mode == "code"
+        """Whether this server-approved turn may auto-approve sandboxed tools."""
+        return self.execution_mode == "code" and "code" in self.allowed_execution_modes
+
+    def for_execution_mode(self, requested: str) -> "AccessPolicy":
+        """Return an allowed per-chat execution choice without changing profile."""
+        if requested not in self.allowed_execution_modes:
+            raise AccessPolicyError("requested execution mode is not allowed by the server")
+        return replace(self, execution_mode=requested)
 
 
 def load_access_policy(environ: Mapping[str, str] | None = None) -> AccessPolicy:
@@ -51,23 +58,32 @@ def load_access_policy(environ: Mapping[str, str] | None = None) -> AccessPolicy
         )
 
     configured_mode = values.get("AGY_BRIDGE_EXECUTION_MODE", "plan").strip().lower()
-    if profile in {"sandbox", "workspace"}:
-        if configured_mode != "plan":
-            raise AccessPolicyError(
-                f"{profile} profile must use server-enforced plan execution"
-            )
-        execution_mode = "plan"
-    else:
-        if configured_mode not in _HOST_EXECUTION_MODES:
-            raise AccessPolicyError("host execution mode must be plan or code")
-        execution_mode = configured_mode
+    allowed_raw = values.get("AGY_BRIDGE_ALLOWED_EXECUTION_MODES", configured_mode)
+    allowed_execution_modes = frozenset(
+        value.strip().lower() for value in allowed_raw.split(",") if value.strip()
+    )
+    if configured_mode not in _EXECUTION_MODES or not allowed_execution_modes <= _EXECUTION_MODES:
+        raise AccessPolicyError("execution modes must be plan or code")
+    if not allowed_execution_modes or configured_mode not in allowed_execution_modes:
+        raise AccessPolicyError("default execution mode must be allowed by the server")
+    # Workspace and Host access are deliberately never adjustable from Telegram.
+    # Sandbox alone can opt in, in its root-owned policy, to per-chat code mode.
+    if profile == "workspace" and (
+        configured_mode != "plan" or allowed_execution_modes != {"plan"}
+    ):
+        raise AccessPolicyError("workspace profile must use server-enforced plan execution")
+    if profile == "host" and allowed_execution_modes != {configured_mode}:
+        raise AccessPolicyError("host execution mode must be server-enforced")
 
     label = values.get("AGY_BRIDGE_ACCESS_LABEL", profile.title()).strip()
     if not label or len(label) > 80 or any(ord(char) < 32 for char in label):
         raise AccessPolicyError(
             "AGY_BRIDGE_ACCESS_LABEL must be printable and at most 80 characters"
         )
-    return AccessPolicy(profile=profile, execution_mode=execution_mode, label=label)
+    return AccessPolicy(
+        profile=profile, execution_mode=configured_mode, label=label,
+        allowed_execution_modes=allowed_execution_modes,
+    )
 
 
 def _read_server_policy(raw_path: str) -> dict[str, str]:
@@ -90,7 +106,7 @@ def _read_server_policy(raw_path: str) -> dict[str, str]:
         key, sep, value = line.partition("=")
         if not sep or key not in {
             "AGY_BRIDGE_ACCESS_PROFILE", "AGY_BRIDGE_EXECUTION_MODE",
-            "AGY_BRIDGE_ACCESS_LABEL",
+            "AGY_BRIDGE_ALLOWED_EXECUTION_MODES", "AGY_BRIDGE_ACCESS_LABEL",
         }:
             raise AccessPolicyError("server access policy contains an invalid entry")
         parsed[key] = value.strip()

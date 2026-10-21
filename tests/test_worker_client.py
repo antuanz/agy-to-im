@@ -21,6 +21,7 @@ async def test_worker_job_streams_drafts_and_final_result(tmp_path: Path) -> Non
         request = json.loads(await reader.readline())
         assert request["op"] == "run"
         assert request["conversation_id"] == ""
+        assert request["execution_mode"] == "plan"
         for event in (
             {"type": "delta", "text": "hello"},
             {"type": "result", "text": "hello world", "exit_code": 0, "status": "SUCCESS"},
@@ -38,7 +39,7 @@ async def test_worker_job_streams_drafts_and_final_result(tmp_path: Path) -> Non
     try:
         result = await run_worker_job(
             str(socket), prompt="hi", chat_dir=str(tmp_path), conversation_id="",
-            model="", timeout=1, on_output=on_output,
+            model="", execution_mode="plan", timeout=1, on_output=on_output,
         )
     finally:
         server.close()
@@ -104,7 +105,7 @@ async def test_worker_job_accepts_only_fixed_failure_reasons(tmp_path: Path) -> 
     try:
         result = await run_worker_job(
             str(socket), prompt="hello", chat_dir="/tmp/chat", conversation_id="",
-            model="", timeout=1,
+            model="", execution_mode="plan", timeout=1,
         )
     finally:
         server.close()
@@ -136,7 +137,7 @@ async def test_cancelling_a_worker_job_sends_its_opaque_cancel_request(tmp_path:
     try:
         task = asyncio.create_task(run_worker_job(
             str(socket), prompt="hi", chat_dir=str(tmp_path), conversation_id="",
-            model="", timeout=30,
+            model="", execution_mode="plan", timeout=30,
         ))
         await asyncio.wait_for(run_started.wait(), timeout=0.2)
         task.cancel()

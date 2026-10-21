@@ -36,11 +36,12 @@ InlineKeyboard = list[list[dict[str, Any]]]
 BotCommand = dict[str, str]
 
 # This is an interface convenience only.  It deliberately has no command that
-# can change the worker's server-owned access or execution policy.
+# can change the worker's server-owned access profile.
 SAFE_COMMAND_MENU: tuple[BotCommand, ...] = (
     {"command": "start", "description": "Welcome and safe usage"},
     {"command": "help", "description": "Show help and examples"},
     {"command": "model", "description": "Choose a model for this chat"},
+    {"command": "mode", "description": "Choose plan or execution mode"},
     {"command": "settings", "description": "Show model and session status"},
     {"command": "reset", "description": "Start a fresh chat session"},
     {"command": "cancel", "description": "Stop this chat's active request"},

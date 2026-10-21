@@ -53,6 +53,7 @@ async def run_worker_job(
     chat_dir: str,
     conversation_id: str,
     model: str,
+    execution_mode: str,
     timeout: float,
     on_output: OutputCallback | None = None,
 ) -> AgyResult:
@@ -66,7 +67,7 @@ async def run_worker_job(
         request = {
             "op": "run", "prompt": prompt, "chat_dir": chat_dir,
             "conversation_id": conversation_id, "model": model,
-            "request_id": request_id,
+            "execution_mode": execution_mode, "request_id": request_id,
         }
         writer.write(json.dumps(request, ensure_ascii=False).encode("utf-8") + b"\n")
         await writer.drain()

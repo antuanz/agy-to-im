@@ -63,15 +63,16 @@ def _build_args(
     if model:
         args.extend(["--model", model])
     if policy.permits_unattended_tools:
-        # Host access is a server-side decision. It still runs as the unprivileged
-        # agy account; it is never a root, sudo, or Docker capability.
+        # The root-owned policy permits this only for the active worker profile.
+        # In the default case it remains inside the root-created Sandbox, never
+        # becoming root, sudo, Docker, or wider VM access.
         args.append("--dangerously-skip-permissions")
         args.extend(["--mode", "accept-edits"])
     else:
         # The production worker already has a root-created systemd filesystem
         # boundary. This VM blocks unprivileged user namespaces, so agy's
         # --sandbox flag exits before a turn can start. Plan mode remains
-        # server-enforced and Telegram cannot add unattended approval.
+        # server-enforced and Telegram cannot exceed the policy's allowed modes.
         args.extend(["--mode", "plan"])
     args.extend(["--print-timeout", print_timeout])
     return args

@@ -23,7 +23,7 @@ WELCOME_TEXT = (
     "Welcome! I'm your Antigravity bridge bot.\n\n"
     "Send me any message and I'll forward it to the agy CLI. "
     "Each chat has its own session that persists across messages.\n\n"
-    "Commands: /start · /help · /status · /settings · /model · /reset · /cancel"
+    "Commands: /start · /help · /status · /settings · /model · /mode · /reset · /cancel"
 )
 
 HELP_TEXT = (
@@ -33,13 +33,14 @@ HELP_TEXT = (
     "/status   — read-only access + chat summary\n"
     "/settings — control panel with buttons\n"
     "/model    — pick a model (per-chat override)\n"
+    "/mode     — choose plan or execution in this Sandbox chat\n"
     "/reset    — fresh agy session for this chat\n"
     "/cancel   — stop this chat's active request\n"
     "/info     — same as /status\n"
     "/image on|off — toggle photo processing\n"
     "/files    — list recent uploads\n"
     "/start, /help — these messages\n\n"
-    "Model selection is per-chat. VM access is controlled only by the server owner."
+    "Model and permitted execution-mode choices are per-chat. VM access is controlled only by the server owner."
 )
 
 
@@ -59,6 +60,18 @@ def effective_model_value(cs: "ChatState", cfg: "Config") -> str:
     return cfg.agy.model
 
 
+def effective_execution_mode(cs: "ChatState", cfg: "Config") -> tuple[str, str]:
+    """Return the root-approved server default or a saved chat choice."""
+    # Only Sandbox may offer per-chat modes.  Old saved state is deliberately
+    # ignored when an administrator activates Workspace or Host access.
+    if (
+        cfg.access.profile == "sandbox"
+        and cs.mode in cfg.access.allowed_execution_modes
+    ):
+        return cs.mode, "chat"
+    return cfg.access.execution_mode, "server default"
+
+
 def is_cancel_command(text: str) -> bool:
     """Recognize Telegram's optional @BotUsername command suffix."""
     command = text.strip().split(maxsplit=1)[0].lower() if text.strip() else ""
@@ -74,6 +87,7 @@ def _effective_model(cs: "ChatState", cfg: "Config") -> tuple[str, str]:
 
 def render_status(cs: "ChatState", cfg: "Config") -> str:
     model, model_src = _effective_model(cs, cfg)
+    execution_mode, execution_src = effective_execution_mode(cs, cfg)
     session = "active (resumes next turn)" if cs.has_session else "fresh (next turn starts new)"
     home = os.path.expanduser("~")
     workdir = cs.chat_dir.replace(home, "~", 1)
@@ -81,7 +95,7 @@ def render_status(cs: "ChatState", cfg: "Config") -> str:
         "🟢 Antigravity Bridge — Status\n"
         f"Model:      {model}  [{model_src}]\n"
         f"Access:     {cfg.access.label}  [{cfg.access.profile}]\n"
-        f"Execution:  {cfg.access.execution_mode}  [server-managed]\n"
+        f"Execution:  {execution_mode}  [{execution_src}]\n"
         "\n"
         "This chat:\n"
         f"  Session:  {session}\n"
@@ -199,8 +213,32 @@ async def handle_text_command(
             return BridgeReply(f"⚠️ Unsupported model: {args}")
         return _render_model_picker(cs, cfg, models, discovery_error)
     if cmd == "/mode":
+        requested = args.lower()
+        current, source = effective_execution_mode(cs, cfg)
+        if cfg.access.profile != "sandbox":
+            return BridgeReply(
+                f"Execution is server-managed for {cfg.access.label}: {current}. "
+                "This command cannot change the active VM access profile."
+            )
+        if not requested:
+            choices = ", ".join(sorted(cfg.access.allowed_execution_modes))
+            return BridgeReply(
+                f"Execution: {current}  [{source}]\n"
+                f"Allowed in this server profile: {choices}.\n"
+                "Use /mode plan, /mode code, or /mode default. "
+                "This never changes VM access."
+            )
+        if requested == "default":
+            cs.mode = ""
+            current, _ = effective_execution_mode(cs, cfg)
+            return BridgeReply(f"Execution reset to server default: {current}")
+        if requested not in {"plan", "code"}:
+            return BridgeReply("Use /mode plan, /mode code, or /mode default.")
+        if requested not in cfg.access.allowed_execution_modes:
+            return BridgeReply(f"This server profile does not allow {requested} execution.")
+        cs.mode = requested
         return BridgeReply(
-            "Execution and VM access are server-managed. The owner changes them through SSH."
+            f"Execution set to {requested}. VM access remains {cfg.access.label}."
         )
     if cmd == "/reset":
         cs.has_session = False
@@ -255,8 +293,8 @@ def handle_callback(
         return _render_model_picker(cs, cfg, models, discovery_error)
     if data == "nav:mode":
         return BridgeReply(
-            "Execution and VM access are server-managed. The owner changes them through SSH.",
-            toast="Server-managed",
+            "Use /mode plan or /mode code. VM access remains server-managed.",
+            toast="Use /mode",
         )
     if data == "R":
         cs.has_session = False

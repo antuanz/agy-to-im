@@ -18,7 +18,7 @@ from src.closed_context import (
 )
 from src.diagnostics import safe_failure_reason
 from src.worker_client import run_worker_job
-from src.commands import effective_model_value
+from src.commands import effective_execution_mode, effective_model_value
 
 if TYPE_CHECKING:
     from src.config import Config
@@ -78,6 +78,7 @@ async def execute_agy(
         hb_task = asyncio.create_task(_heartbeat(tg, chat_id, hb_stop))
     turn_start = time.perf_counter()
     prompt = add_closed_context_instruction(msg.text, cfg.access)
+    execution_mode, _ = effective_execution_mode(cs, cfg)
     try:
         worker_socket = os.environ.get("AGY_BRIDGE_WORKER_SOCKET", "")
         if worker_socket:
@@ -85,7 +86,7 @@ async def execute_agy(
             result = await run_worker_job(
                 worker_socket, prompt=prompt, chat_dir=cs.chat_dir,
                 conversation_id=cs.conversation_id, model=effective_model_value(cs, cfg),
-                timeout=AGY_TIMEOUT_S, on_output=on_output,
+                execution_mode=execution_mode, timeout=AGY_TIMEOUT_S, on_output=on_output,
             )
         else:
             # Local execution exists only for development and unit tests.
@@ -95,11 +96,11 @@ async def execute_agy(
                 conversation_id=cs.conversation_id,
                 model=effective_model_value(cs, cfg),
                 # Execution policy is selected by the root-owned service.
-                mode=cfg.access.execution_mode,
+                mode=execution_mode,
                 agy_path=agy_path,
                 timeout=AGY_TIMEOUT_S,
                 on_output=on_output,
-                access=cfg.access,
+                access=cfg.access.for_execution_mode(execution_mode),
             )
         # graphify is a local process and must never run in the token-holding
         # controller service. The production worker protocol does not expose it.

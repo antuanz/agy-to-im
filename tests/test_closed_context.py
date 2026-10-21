@@ -20,7 +20,10 @@ def test_restricted_profile_prefixes_closed_context_instruction() -> None:
 
 
 def test_host_profile_does_not_add_closed_context_instruction() -> None:
-    policy = AccessPolicy(profile="host", execution_mode="code", label="Host")
+    policy = AccessPolicy(
+        profile="host", execution_mode="code", label="Host",
+        allowed_execution_modes=frozenset({"code"}),
+    )
 
     assert add_closed_context_instruction("Inspect the host.", policy) == "Inspect the host."
 

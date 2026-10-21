@@ -107,6 +107,10 @@ def _valid_request_id(value: object) -> str | None:
     return value if value.isascii() and value.replace("-", "").replace("_", "").isalnum() else None
 
 
+def _valid_execution_mode(value: object) -> str | None:
+    return value if value in {"plan", "code"} else None
+
+
 def _artifact_root() -> Path | None:
     """Return the worker-only agy artifact directory, never a supplied path."""
     home = Path(os.environ.get("HOME", ""))
@@ -174,14 +178,15 @@ async def _run_request(request: dict[str, Any], writer: asyncio.StreamWriter) ->
     model = _valid_model(request.get("model"))
     conversation_id = _valid_conversation_id(request.get("conversation_id"))
     request_id = _valid_request_id(request.get("request_id"))
+    execution_mode = _valid_execution_mode(request.get("execution_mode"))
     if (
         prompt is None or chat_dir is None or model is None
-        or conversation_id is None or request_id is None
+        or conversation_id is None or request_id is None or execution_mode is None
     ):
         await _send(writer, {"type": "error"})
         return
     try:
-        policy = load_access_policy()
+        policy = load_access_policy().for_execution_mode(execution_mode)
     except AccessPolicyError:
         await _send(writer, {"type": "error"})
         return

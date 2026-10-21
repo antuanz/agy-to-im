@@ -199,7 +199,7 @@ async def test_run_registers_menu_only_for_allowlisted_chats(tmp_path: Path) -> 
     assert tg.command_menus is not None
     commands, scope = tg.command_menus[0]
     assert [command["command"] for command in commands] == [
-        "start", "help", "model", "settings", "reset", "cancel",
+        "start", "help", "model", "mode", "settings", "reset", "cancel",
     ]
     assert scope == {"type": "chat", "chat_id": 10}
 

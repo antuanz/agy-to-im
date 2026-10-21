@@ -8,6 +8,7 @@ from typing import Any
 import pytest
 
 from src.agy_runner import AgyResult
+from src.access import AccessPolicy
 from src.config import AgyConfig, Config, TelegramConfig
 from src.state import ChatState
 from src.turn import (
@@ -79,8 +80,32 @@ async def test_execute_agy_returns_reply_and_records_metrics(monkeypatch: pytest
     assert calls[0]["prompt"].endswith("hello")
     assert "# Closed Context Mode" in calls[0]["prompt"]
     assert calls[0]["chat_dir"] == "/tmp/chat"
+    assert calls[0]["mode"] == "plan"
     assert cs.conversation_id == "123e4567-e89b-12d3-a456-426614174000"
     assert cs.has_session is True
+
+
+async def test_execute_agy_passes_allowed_chat_execution_mode_to_worker(monkeypatch: pytest.MonkeyPatch) -> None:
+    calls: list[dict[str, Any]] = []
+
+    async def fake_worker(*_args: Any, **kwargs: Any) -> AgyResult:
+        calls.append(kwargs)
+        return AgyResult("reply", 0, "", "SUCCESS")
+
+    monkeypatch.setattr("src.turn.run_worker_job", fake_worker)
+    monkeypatch.setenv("AGY_BRIDGE_WORKER_SOCKET", "/run/test-worker.sock")
+    policy = AccessPolicy(
+        profile="sandbox", execution_mode="code", label="Sandbox execution",
+        allowed_execution_modes=frozenset({"plan", "code"}),
+    )
+    cfg = Config(
+        telegram=TelegramConfig(bot_token="t", allowed_user_ids=[42]),
+        agy=AgyConfig(), access=policy,
+    )
+    cs = ChatState(chat_dir="/tmp/chat", mode="plan")
+    text, code = await execute_agy(_FakeTG(), 42, _FakeMsg(), cs, cfg, "/usr/bin/agy")
+    assert (text, code) == ("reply", 0)
+    assert calls[0]["execution_mode"] == "plan"
 
 
 async def test_execute_agy_returns_timeout_reply(monkeypatch: pytest.MonkeyPatch) -> None:

@@ -2,15 +2,17 @@
 from __future__ import annotations
 
 from src.commands import handle_callback, handle_text_command
+from src.access import AccessPolicy
 from src.config import AgyConfig, Config, TelegramConfig
 from src.state import ChatState
 from src.telegram import CallbackQuery
 
 
-def _cfg(model: str = "", mode: str = "code") -> Config:
+def _cfg(model: str = "", mode: str = "code", *, access: AccessPolicy | None = None) -> Config:
     return Config(
         telegram=TelegramConfig(bot_token="t", allowed_user_ids=[42]),
         agy=AgyConfig(default_workdir="/tmp", model=model, mode=mode),
+        access=access or AccessPolicy(),
     )
 
 
@@ -208,9 +210,37 @@ async def test_callback_mode_choice() -> None:
     assert reply.toast == "Server-managed"
 
 
-async def test_mode_command_cannot_change_server_execution() -> None:
+async def test_mode_command_changes_only_an_allowed_chat_preference() -> None:
+    cs = _state()
+    policy = AccessPolicy(
+        profile="sandbox", execution_mode="code", label="Sandbox execution",
+        allowed_execution_modes=frozenset({"plan", "code"}),
+    )
+    reply = await handle_text_command(_FakeMsg("/mode plan"), cs, _cfg(access=policy))
+    assert reply is not None
+    assert "set to plan" in reply.text.lower()
+    assert cs.mode == "plan"
+    reply = await handle_text_command(_FakeMsg("/mode default"), cs, _cfg(access=policy))
+    assert reply is not None
+    assert cs.mode == ""
+
+
+async def test_mode_command_rejects_mode_not_allowed_by_server_profile() -> None:
     cs = _state()
     reply = await handle_text_command(_FakeMsg("/mode code"), cs, _cfg())
     assert reply is not None
-    assert "server-managed" in reply.text.lower()
+    assert "does not allow" in reply.text.lower()
     assert cs.mode == ""
+
+
+async def test_mode_command_cannot_affect_host_profile() -> None:
+    cs = _state()
+    cs.mode = "plan"
+    policy = AccessPolicy(
+        profile="host", execution_mode="code", label="Host access",
+        allowed_execution_modes=frozenset({"code"}),
+    )
+    reply = await handle_text_command(_FakeMsg("/mode plan"), cs, _cfg(access=policy))
+    assert reply is not None
+    assert "server-managed" in reply.text.lower()
+    assert "Execution:  code" in (await handle_text_command(_FakeMsg("/status"), cs, _cfg(access=policy))).text

@@ -21,18 +21,36 @@ def test_workspace_cannot_select_code_execution() -> None:
         })
 
 
-def test_host_code_is_the_only_permission_bypass() -> None:
+def test_sandbox_policy_can_allow_code_without_changing_profile() -> None:
     policy = load_access_policy({
-        "AGY_BRIDGE_ACCESS_PROFILE": "host",
+        "AGY_BRIDGE_ACCESS_PROFILE": "sandbox",
         "AGY_BRIDGE_EXECUTION_MODE": "code",
-        "AGY_BRIDGE_ACCESS_LABEL": "Host access",
+        "AGY_BRIDGE_ALLOWED_EXECUTION_MODES": "plan,code",
+        "AGY_BRIDGE_ACCESS_LABEL": "Sandbox execution",
     })
+    assert policy.profile == "sandbox"
+    assert policy.for_execution_mode("plan").execution_mode == "plan"
     args = _build_args(
         agy_path="/usr/bin/agy", prompt="x", conversation_id="", model="",
-        mode="plan", print_timeout="15m", access=policy,
+        mode="code", print_timeout="15m", access=policy,
     )
     assert "--dangerously-skip-permissions" in args
     assert args[args.index("--mode") + 1] == "accept-edits"
+
+
+def test_server_locked_policy_rejects_unapproved_chat_mode() -> None:
+    policy = load_access_policy({})
+    with pytest.raises(AccessPolicyError, match="not allowed"):
+        policy.for_execution_mode("code")
+
+
+def test_host_execution_is_not_switchable_from_telegram() -> None:
+    with pytest.raises(AccessPolicyError, match="server-enforced"):
+        load_access_policy({
+            "AGY_BRIDGE_ACCESS_PROFILE": "host",
+            "AGY_BRIDGE_EXECUTION_MODE": "code",
+            "AGY_BRIDGE_ALLOWED_EXECUTION_MODES": "plan,code",
+        })
 
 
 def test_child_environment_excludes_controller_credentials(monkeypatch: pytest.MonkeyPatch) -> None:
