@@ -107,6 +107,7 @@ async def test_callback_nav_settings() -> None:
     cq = CallbackQuery(update_id=1, callback_query_id="q", chat_id=42, user_id=42, message_id=1, data="nav:settings")
     reply = handle_callback(cq, _state(), _cfg())
     assert reply.keyboard is not None
+    assert any(row[0]["callback_data"] == "nav:mode" for row in reply.keyboard)
 
 
 async def test_callback_model_choice() -> None:
@@ -210,6 +211,34 @@ async def test_callback_mode_choice() -> None:
     assert reply.toast == "Server-managed"
 
 
+async def test_mode_command_shows_execution_buttons() -> None:
+    policy = AccessPolicy(
+        profile="sandbox", execution_mode="code", label="Sandbox execution",
+        allowed_execution_modes=frozenset({"plan", "code"}),
+    )
+    reply = await handle_text_command(_FakeMsg("/mode"), _state(), _cfg(access=policy))
+    assert reply is not None and reply.keyboard is not None
+    assert [row[0]["callback_data"] for row in reply.keyboard] == [
+        "e:plan", "e:code", "e:default", "nav:settings",
+    ]
+
+
+async def test_execution_button_changes_only_chat_mode() -> None:
+    cs = _state()
+    policy = AccessPolicy(
+        profile="sandbox", execution_mode="code", label="Sandbox execution",
+        allowed_execution_modes=frozenset({"plan", "code"}),
+    )
+    cq = CallbackQuery(
+        update_id=1, callback_query_id="q", chat_id=42, user_id=42,
+        message_id=1, data="e:plan",
+    )
+    reply = handle_callback(cq, cs, _cfg(access=policy))
+    assert cs.mode == "plan"
+    assert reply.toast == "Execution: Plan"
+    assert "Execution:  plan  [chat]" in reply.text
+
+
 async def test_mode_command_changes_only_an_allowed_chat_preference() -> None:
     cs = _state()
     policy = AccessPolicy(
@@ -218,7 +247,7 @@ async def test_mode_command_changes_only_an_allowed_chat_preference() -> None:
     )
     reply = await handle_text_command(_FakeMsg("/mode plan"), cs, _cfg(access=policy))
     assert reply is not None
-    assert "set to plan" in reply.text.lower()
+    assert "execution: plan" in reply.text.lower()
     assert cs.mode == "plan"
     reply = await handle_text_command(_FakeMsg("/mode default"), cs, _cfg(access=policy))
     assert reply is not None

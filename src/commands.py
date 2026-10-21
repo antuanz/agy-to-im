@@ -104,9 +104,11 @@ def render_status(cs: "ChatState", cfg: "Config") -> str:
     )
 
 
-def _settings_keyboard() -> InlineKeyboard:
+def _settings_keyboard(cs: "ChatState", cfg: "Config") -> InlineKeyboard:
+    execution_mode, _ = effective_execution_mode(cs, cfg)
     return [
         [{"text": "Model", "callback_data": "nav:model"}],
+        [{"text": f"Execution: {execution_mode.title()}", "callback_data": "nav:mode"}],
         [{"text": "Reset session", "callback_data": "R"}],
         [{"text": "Refresh", "callback_data": "nav:settings"}],
     ]
@@ -144,7 +146,59 @@ def _model_keyboard(
 
 
 def _render_settings(cs: "ChatState", cfg: "Config") -> BridgeReply:
-    return BridgeReply(text=render_status(cs, cfg), keyboard=_settings_keyboard())
+    return BridgeReply(text=render_status(cs, cfg), keyboard=_settings_keyboard(cs, cfg))
+
+
+def _mode_keyboard(cs: "ChatState", cfg: "Config") -> InlineKeyboard:
+    """Offer only modes pre-authorised by the root-owned Sandbox policy."""
+    rows: InlineKeyboard = []
+    current, source = effective_execution_mode(cs, cfg)
+    labels = {"plan": "Plan", "code": "Execution"}
+    for mode in ("plan", "code"):
+        if mode in cfg.access.allowed_execution_modes:
+            marker = "● " if current == mode else "○ "
+            rows.append([{"text": marker + labels[mode], "callback_data": f"e:{mode}"}])
+    default_marker = "● " if source == "server default" else "○ "
+    rows.append([{
+        "text": default_marker + f"Server default ({cfg.access.execution_mode.title()})",
+        "callback_data": "e:default",
+    }])
+    rows.append([{"text": "← Back to settings", "callback_data": "nav:settings"}])
+    return rows
+
+
+def _render_mode_picker(cs: "ChatState", cfg: "Config") -> BridgeReply:
+    current, source = effective_execution_mode(cs, cfg)
+    if cfg.access.profile != "sandbox":
+        return BridgeReply(
+            text=(
+                f"Execution is server-managed for {cfg.access.label}: {current}.\n\n"
+                "This control cannot change the active VM access profile."
+            ),
+            keyboard=[[{"text": "← Back to settings", "callback_data": "nav:settings"}]],
+        )
+    return BridgeReply(
+        text=(
+            "⚙️ Choose execution mode for this chat\n\n"
+            f"Current: {current.title()}  [{source}]\n\n"
+            "Execution auto-approves tools only inside the existing Sandbox. "
+            "It never changes VM access."
+        ),
+        keyboard=_mode_keyboard(cs, cfg),
+    )
+
+
+def _select_execution_mode(cs: "ChatState", cfg: "Config", requested: str) -> str:
+    """Change only an allowed Sandbox chat preference and return a safe toast."""
+    if cfg.access.profile != "sandbox":
+        return "Server-managed"
+    if requested == "default":
+        cs.mode = ""
+        return f"Server default: {cfg.access.execution_mode.title()}"
+    if requested not in {"plan", "code"} or requested not in cfg.access.allowed_execution_modes:
+        return "Mode not allowed"
+    cs.mode = requested
+    return f"Execution: {requested.title()}"
 
 
 def _render_model_picker(
@@ -214,32 +268,18 @@ async def handle_text_command(
         return _render_model_picker(cs, cfg, models, discovery_error)
     if cmd == "/mode":
         requested = args.lower()
-        current, source = effective_execution_mode(cs, cfg)
         if cfg.access.profile != "sandbox":
-            return BridgeReply(
-                f"Execution is server-managed for {cfg.access.label}: {current}. "
-                "This command cannot change the active VM access profile."
-            )
+            return _render_mode_picker(cs, cfg)
         if not requested:
-            choices = ", ".join(sorted(cfg.access.allowed_execution_modes))
-            return BridgeReply(
-                f"Execution: {current}  [{source}]\n"
-                f"Allowed in this server profile: {choices}.\n"
-                "Use /mode plan, /mode code, or /mode default. "
-                "This never changes VM access."
-            )
-        if requested == "default":
-            cs.mode = ""
-            current, _ = effective_execution_mode(cs, cfg)
-            return BridgeReply(f"Execution reset to server default: {current}")
+            return _render_mode_picker(cs, cfg)
         if requested not in {"plan", "code"}:
-            return BridgeReply("Use /mode plan, /mode code, or /mode default.")
+            if requested != "default":
+                return BridgeReply("Use /mode, /mode plan, /mode code, or /mode default.")
         if requested not in cfg.access.allowed_execution_modes:
-            return BridgeReply(f"This server profile does not allow {requested} execution.")
-        cs.mode = requested
-        return BridgeReply(
-            f"Execution set to {requested}. VM access remains {cfg.access.label}."
-        )
+            if requested != "default":
+                return BridgeReply(f"This server profile does not allow {requested} execution.")
+        toast = _select_execution_mode(cs, cfg, requested)
+        return BridgeReply(f"{toast}. VM access remains {cfg.access.label}.")
     if cmd == "/reset":
         cs.has_session = False
         cs.conversation_id = ""
@@ -292,10 +332,7 @@ def handle_callback(
     if data == "nav:model":
         return _render_model_picker(cs, cfg, models, discovery_error)
     if data == "nav:mode":
-        return BridgeReply(
-            "Use /mode plan or /mode code. VM access remains server-managed.",
-            toast="Use /mode",
-        )
+        return _render_mode_picker(cs, cfg)
     if data == "R":
         cs.has_session = False
         cs.conversation_id = ""
@@ -323,6 +360,11 @@ def handle_callback(
     if data.startswith("M:"):
         rep = _render_settings(cs, cfg)
         return BridgeReply(text=rep.text, keyboard=rep.keyboard, toast="Server-managed")
+
+    if data.startswith("e:"):
+        toast = _select_execution_mode(cs, cfg, data[2:])
+        rep = _render_settings(cs, cfg)
+        return BridgeReply(text=rep.text, keyboard=rep.keyboard, toast=toast)
 
     return _render_settings(cs, cfg)
 
