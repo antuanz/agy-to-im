@@ -63,13 +63,13 @@ commands and workspace mount templates.
 After a successful turn, the controller can return documents and images created by the agent in
 that chat's workspace. The worker never receives the Telegram token: it only writes files, while
 the token-owning controller performs the upload. Delivery is intentionally conservative: it sends
-at most five new regular files, each no larger than 20 MiB and 25 MiB in total. Supported images
-(`.jpg`, `.jpeg`, `.png`, `.webp`) are sent as Telegram photos; supported documents (`.txt`, `.md`,
-`.csv`, `.json`, `.pdf`, `.docx`, `.xlsx`, `.pptx`, `.py`) are sent as documents.
+at most five new regular files, each no larger than 20 MiB and 25 MiB in total. Common images
+(`.jpg`, `.jpeg`, `.png`, `.webp`) are sent as Telegram photos; every other eligible file is sent
+as a Telegram document, regardless of its extension.
 
 The controller compares file identities before and after the turn. It never follows symlinks or
 sends hard links, pre-existing/renamed files, hidden paths, `.bridge-inbox` uploads, OKF memory,
-unsupported types, or files that exceed the limits. If the comparison cannot be completed safely,
+or files that exceed the limits. If the comparison cannot be completed safely,
 it sends no generated file. This feature does not make arbitrary VM paths available: the worker's
 filesystem boundary still limits it to the chat workspace.
 

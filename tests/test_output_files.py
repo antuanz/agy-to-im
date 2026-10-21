@@ -11,19 +11,20 @@ from src.output_files import (
 )
 
 
-def test_discovers_only_new_supported_files(tmp_path: Path) -> None:
+def test_discovers_every_new_regular_file_as_a_document_or_photo(tmp_path: Path) -> None:
     (tmp_path / "old.md").write_text("old", encoding="utf-8")
     before = snapshot_workspace_files(tmp_path)
     (tmp_path / "report.md").write_text("new", encoding="utf-8")
     (tmp_path / "chart.png").write_bytes(b"image")
-    (tmp_path / "ignored.bin").write_bytes(b"binary")
+    (tmp_path / "archive.tar.gz").write_bytes(b"binary")
 
     found = discover_new_outputs(tmp_path, before)
 
     assert [(item.filename, item.kind) for item in found.files] == [
+        ("archive.tar.gz", "document"),
         ("chart.png", "photo"), ("report.md", "document"),
     ]
-    assert found.skipped is True
+    assert found.skipped is False
 
 
 def test_does_not_send_existing_file_renamed_to_an_allowed_extension(tmp_path: Path) -> None:

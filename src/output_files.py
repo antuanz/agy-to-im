@@ -21,9 +21,6 @@ MAX_SCAN_DEPTH = 8
 MAX_SCANNED_ENTRIES = 4096
 
 _PHOTO_EXTENSIONS = frozenset({".jpeg", ".jpg", ".png", ".webp"})
-_DOCUMENT_EXTENSIONS = frozenset({
-    ".csv", ".docx", ".json", ".md", ".pdf", ".pptx", ".py", ".txt", ".xlsx",
-})
 _EXCLUDED_PARTS = frozenset({".bridge-inbox", ".git", "__pycache__", "okf_memory"})
 
 # Linux exposes stable device/inode pairs. Windows can report both as zero, so
@@ -120,13 +117,13 @@ def _is_deliverable_relative_path(relative: Path) -> bool:
     return not any(part.startswith(".") or part in _EXCLUDED_PARTS for part in relative.parts)
 
 
-def _kind_for_path(path: Path) -> OutputKind | None:
-    suffix = path.suffix.lower()
-    if suffix in _PHOTO_EXTENSIONS:
+def _kind_for_path(path: Path) -> OutputKind:
+    if path.suffix.lower() in _PHOTO_EXTENSIONS:
         return "photo"
-    if suffix in _DOCUMENT_EXTENSIONS:
-        return "document"
-    return None
+    # Telegram documents may have any file extension. Returning every eligible
+    # new file is useful for agent-produced archives, data, and source formats
+    # that cannot be anticipated here; only common image types use sendPhoto.
+    return "document"
 
 
 def _safe_filename(path: Path) -> str | None:
@@ -142,8 +139,9 @@ def discover_new_outputs(
     """Find a bounded allowlist of files with identities absent before the turn.
 
     Existing files renamed into an allowed extension retain their inode and are
-    not sent. Symlinks, hard links, hidden/internal paths, unsupported files,
-    and anything beyond the configured size/count limits are ignored.
+    not sent. Symlinks, hard links, hidden/internal paths, and anything beyond
+    the configured size/count limits are ignored. Non-image files are sent as
+    Telegram documents regardless of their extension.
     """
     if not before.complete:
         return OutputDiscovery((), skipped=True)

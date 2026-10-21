@@ -198,7 +198,7 @@ async def _do_turn(
             try:
                 await tg.send_message(
                     msg.chat_id,
-                    "⚠️ Some generated files were not sent because they are unsupported or exceed delivery limits.",
+                    "⚠️ Some generated files were not sent because they exceed delivery limits or failed a safety check.",
                 )
             except Exception:
                 LOG.warning("generated output warning failed chat=%s", msg.chat_id)

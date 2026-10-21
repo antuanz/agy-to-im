@@ -142,6 +142,7 @@ async def test_run_sends_only_new_generated_outputs(tmp_path: Path, monkeypatch:
         chat_dir = Path(cs.chat_dir)
         (chat_dir / "answer.md").write_text("hello", encoding="utf-8")
         (chat_dir / "chart.png").write_bytes(b"png")
+        (chat_dir / "results.bin").write_bytes(b"binary")
         return "Done", 0
 
     chats_root = tmp_path / "chats"
@@ -158,7 +159,11 @@ async def test_run_sends_only_new_generated_outputs(tmp_path: Path, monkeypatch:
         agy_path="agy", info=DaemonInfo("@bot", 0.0, "1.0"), stop_event=stop,
     )
 
-    assert tg.sent_files == [("document", 10, "answer.md"), ("photo", 10, "chart.png")]
+    assert tg.sent_files == [
+        ("document", 10, "answer.md"),
+        ("photo", 10, "chart.png"),
+        ("document", 10, "results.bin"),
+    ]
 
 
 async def test_run_drops_unauthorized_message(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
