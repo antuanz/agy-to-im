@@ -137,7 +137,7 @@ async def test_builds_stream_argv_and_omits_empty_model(
         "--input-format", "stream-json", "--output-format", "stream-json"
     ]
     assert "--continue" in args
-    assert "--sandbox" in args
+    assert "--sandbox" not in args
     assert "--model" not in args
     assert "prompt is not argv" not in args
 
@@ -164,7 +164,7 @@ def test_sandbox_policy_omits_dangerous_permission_bypass() -> None:
     )
     assert "--dangerously-skip-permissions" not in args
     assert args[args.index("--mode") + 1] == "plan"
-    assert "--sandbox" in args
+    assert "--sandbox" not in args
 
 
 @pytest.mark.parametrize(

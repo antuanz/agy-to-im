@@ -51,9 +51,10 @@ environment.
 
 The active access profile is supplied only by a root-owned server policy. Telegram commands,
 buttons, chat state, and `config.json` cannot select or elevate it. `sandbox` and `workspace`
-always force `agy --mode plan --sandbox` without `--dangerously-skip-permissions`; only the
-root-selected `host` profile may use unattended tool approval. A production worker must run in an
-OS-level filesystem boundary. See the VM deployment documentation for the root-only profile
+always force `agy --mode plan` without `--dangerously-skip-permissions`; only the root-selected
+`host` profile may use unattended tool approval. The production worker uses an OS-level filesystem
+boundary. On VMs where unprivileged user namespaces are blocked, this deliberately replaces the
+CLI's incompatible `--sandbox` flag. See the VM deployment documentation for the root-only profile
 commands and workspace mount templates.
 
 ### Quickstart

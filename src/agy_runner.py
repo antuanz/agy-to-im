@@ -62,9 +62,11 @@ def _build_args(
         args.append("--dangerously-skip-permissions")
         args.extend(["--mode", "accept-edits"])
     else:
-        # Sandbox and workspace runs rely on systemd mount isolation as well as
-        # agy's own sandbox. No Telegram-controlled setting can remove either.
-        args.extend(["--mode", "plan", "--sandbox"])
+        # The production worker already has a root-created systemd filesystem
+        # boundary. This VM blocks unprivileged user namespaces, so agy's
+        # --sandbox flag exits before a turn can start. Plan mode remains
+        # server-enforced and Telegram cannot add unattended approval.
+        args.extend(["--mode", "plan"])
     args.extend(["--print-timeout", print_timeout])
     return args
 
