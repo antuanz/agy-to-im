@@ -24,6 +24,17 @@ not a model row
     )
 
 
+def test_parse_model_slugs_accepts_captured_tab_delimited_columns() -> None:
+    output = (
+        "gemini-4-argon-medium\tGemini 4 Argon (Medium)\n"
+        "claude-opus-5-5-low\tClaude Opus 5.5 (Low)\n"
+    )
+    assert parse_model_slugs(output) == (
+        "gemini-4-argon-medium",
+        "claude-opus-5-5-low",
+    )
+
+
 async def test_success_is_cached_for_five_minutes() -> None:
     now = [100.0]
     catalog = ModelCatalog("agy", clock=lambda: now[0])

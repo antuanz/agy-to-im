@@ -16,8 +16,9 @@ MODEL_DISCOVERY_TIMEOUT_S = 10.0
 MODEL_STDOUT_CAP_BYTES = 262_144
 MODEL_STDERR_CAP_BYTES = 65_536
 _ANSI_RE = re.compile(r"\x1b\[[0-?]*[ -/]*[@-~]")
+# agy uses aligned spaces on a terminal but one tab between columns when stdout is captured.
 _MODEL_LINE_RE = re.compile(
-    r"^\s*([A-Za-z0-9._][A-Za-z0-9._-]*)(?:(?:[ \t]{2,})\S.*)?\s*$"
+    r"^\s*([A-Za-z0-9._][A-Za-z0-9._-]*)(?:(?: {2,}|\t+)\S.*)?\s*$"
 )
 
 
