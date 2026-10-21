@@ -7,6 +7,7 @@ import pytest
 from src.output_files import (
     MAX_OUTPUT_FILE_BYTES,
     discover_new_outputs,
+    stage_new_outputs,
     snapshot_workspace_files,
 )
 
@@ -82,3 +83,26 @@ def test_never_returns_inbound_bridge_files(tmp_path: Path) -> None:
 
     assert found.files == ()
     assert found.skipped is True
+
+
+def test_stages_only_new_isolated_artifacts_into_the_chat_workspace(tmp_path: Path) -> None:
+    artifacts = tmp_path / "brain"
+    chat = tmp_path / "chat"
+    artifacts.mkdir()
+    chat.mkdir()
+    (artifacts / "existing.md").write_text("do not return", encoding="utf-8")
+    before = snapshot_workspace_files(artifacts)
+    chat_before = snapshot_workspace_files(chat)
+    (artifacts / "answer.md").write_text("new answer", encoding="utf-8")
+    (artifacts / "image.png").write_bytes(b"png")
+
+    staged = stage_new_outputs(artifacts, before, chat)
+
+    assert [(item.filename, item.kind) for item in staged.files] == [
+        ("answer.md", "document"), ("image.png", "photo"),
+    ]
+    assert all(item.path.is_file() for item in staged.files)
+    delivered = discover_new_outputs(chat, chat_before)
+    assert [(item.filename, item.kind) for item in delivered.files] == [
+        ("answer.md", "document"), ("image.png", "photo"),
+    ]

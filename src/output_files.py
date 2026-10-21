@@ -1,14 +1,17 @@
-"""Safely discover files newly produced during one successful chat turn.
+"""Safely discover and stage files newly produced during one chat turn.
 
-The worker can write only inside its per-chat workspace.  The controller is the
-only component with a Telegram credential, so it compares the workspace before
-and after a turn and sends back a small, conservative allowlist of new files.
-This module deliberately treats scan uncertainty as "send nothing".
+The controller is the only component with a Telegram credential.  It compares
+the shared per-chat workspace before and after a turn and uploads a small,
+conservative allowlist of new files.  Some agy features save their artifacts in
+the worker's isolated ``brain`` directory instead of the current workspace;
+the worker stages those verified new files into the shared workspace first.
+This module deliberately treats scan or copy uncertainty as "send nothing".
 """
 from __future__ import annotations
 
 import os
 import stat
+import uuid
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Literal
@@ -47,6 +50,9 @@ class OutputFile:
     path: Path
     filename: str
     kind: OutputKind
+    device: int
+    inode: int
+    size: int
 
 
 @dataclass(frozen=True)
@@ -195,6 +201,99 @@ def discover_new_outputs(
         ):
             skipped = True
             continue
-        accepted.append(OutputFile(path=path, filename=filename, kind=kind))
+        accepted.append(OutputFile(
+            path=path, filename=filename, kind=kind,
+            device=item.st_dev, inode=item.st_ino, size=item.st_size,
+        ))
         total_bytes += item.st_size
     return OutputDiscovery(tuple(accepted), skipped)
+
+
+def stage_new_outputs(
+    source_dir: str | Path,
+    before: WorkspaceSnapshot,
+    chat_dir: str | Path,
+) -> OutputDiscovery:
+    """Copy newly discovered isolated-worker artifacts into a chat workspace.
+
+    The source must already be a tightly scoped worker-only artifact directory,
+    not a caller-provided path.  Destination files are copied into a fresh
+    ``generated/<random>`` directory so they appear as new files to the
+    controller's normal delivery scan.  The copy never follows symlinks and
+    verifies the source identity captured during discovery.
+    """
+    found = discover_new_outputs(source_dir, before)
+    if not found.files:
+        return found
+    root = _safe_root(chat_dir)
+    if root is None:
+        return OutputDiscovery((), skipped=True)
+    generated = root / "generated"
+    try:
+        if generated.exists():
+            if generated.is_symlink() or not generated.is_dir():
+                return OutputDiscovery((), skipped=True)
+        else:
+            generated.mkdir(mode=0o750)
+        turn_dir = generated / uuid.uuid4().hex
+        turn_dir.mkdir(mode=0o750)
+    except OSError:
+        return OutputDiscovery((), skipped=True)
+
+    copied: list[OutputFile] = []
+    skipped = found.skipped
+    for output in found.files:
+        destination = turn_dir / output.filename
+        try:
+            source_stat = os.lstat(output.path)
+            if (
+                not stat.S_ISREG(source_stat.st_mode)
+                or source_stat.st_nlink != 1
+                or source_stat.st_dev != output.device
+                or source_stat.st_ino != output.inode
+                or source_stat.st_size != output.size
+            ):
+                raise OSError("artifact changed after discovery")
+            source_flags = os.O_RDONLY | getattr(os, "O_NOFOLLOW", 0)
+            source_fd = os.open(output.path, source_flags)
+            try:
+                opened_stat = os.fstat(source_fd)
+                if (
+                    not stat.S_ISREG(opened_stat.st_mode)
+                    or opened_stat.st_nlink != 1
+                    or opened_stat.st_dev != output.device
+                    or opened_stat.st_ino != output.inode
+                    or opened_stat.st_size != output.size
+                ):
+                    raise OSError("artifact changed while opening")
+                destination_fd = os.open(
+                    destination, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o640,
+                )
+                try:
+                    remaining = output.size
+                    while remaining:
+                        chunk = os.read(source_fd, min(64 * 1024, remaining))
+                        if not chunk:
+                            raise OSError("artifact was truncated while copying")
+                        pending = memoryview(chunk)
+                        while pending:
+                            written = os.write(destination_fd, pending)
+                            if written <= 0:
+                                raise OSError("artifact write failed")
+                            pending = pending[written:]
+                        remaining -= len(chunk)
+                finally:
+                    os.close(destination_fd)
+            finally:
+                os.close(source_fd)
+            copied.append(OutputFile(
+                path=destination, filename=output.filename, kind=output.kind,
+                device=output.device, inode=output.inode, size=output.size,
+            ))
+        except OSError:
+            skipped = True
+            try:
+                destination.unlink(missing_ok=True)
+            except OSError:
+                pass
+    return OutputDiscovery(tuple(copied), skipped)

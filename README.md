@@ -61,17 +61,20 @@ commands and workspace mount templates.
 ### Generated files and images
 
 After a successful turn, the controller can return documents and images created by the agent in
-that chat's workspace. The worker never receives the Telegram token: it only writes files, while
-the token-owning controller performs the upload. Delivery is intentionally conservative: it sends
-at most five new regular files, each no larger than 20 MiB and 25 MiB in total. Common images
-(`.jpg`, `.jpeg`, `.png`, `.webp`) are sent as Telegram photos; every other eligible file is sent
-as a Telegram document, regardless of its extension.
+that chat's workspace. Some agy features instead save an artifact beneath the worker's isolated
+`brain` directory; the worker copies only files proven new during that same successful turn into
+the chat workspace before the controller scans it. The worker never receives the Telegram token:
+it only writes files, while the token-owning controller performs the upload. Delivery is
+intentionally conservative: it sends at most five new regular files, each no larger than 20 MiB
+and 25 MiB in total. Common images (`.jpg`, `.jpeg`, `.png`, `.webp`) are sent as Telegram photos;
+every other eligible file is sent as a Telegram document, regardless of its extension.
 
 The controller compares file identities before and after the turn. It never follows symlinks or
 sends hard links, pre-existing/renamed files, hidden paths, `.bridge-inbox` uploads, OKF memory,
 or files that exceed the limits. If the comparison cannot be completed safely,
-it sends no generated file. This feature does not make arbitrary VM paths available: the worker's
-filesystem boundary still limits it to the chat workspace.
+it sends no generated file. The worker reads artifacts only from its fixed, isolated `brain`
+directory and copies them into a new chat-workspace directory; this feature does not make arbitrary
+VM paths available.
 
 Restricted profiles also prepend a fixed **Closed Context Mode** instruction to every turn. It
 limits the conversation to user-provided task materials and tells the agent not to inspect or

@@ -1,6 +1,7 @@
 """Validation tests for the root-supervised worker boundary."""
 from __future__ import annotations
 
+import json
 from pathlib import Path
 
 import src.worker as worker
@@ -54,6 +55,58 @@ async def test_worker_uses_last_verified_models_after_refresh_failure(monkeypatc
 
     assert models == ("gemini-3.8-flash-medium",)
     assert error == "worker could not run agy models"
+
+
+async def test_worker_stages_new_brain_artifacts_only_after_a_successful_turn(
+    monkeypatch, tmp_path: Path,
+) -> None:
+    controller_root = tmp_path / "controller-chats"
+    worker_root = tmp_path / "worker-chats"
+    agent_home = tmp_path / "agent-home"
+    (controller_root / "42").mkdir(parents=True)
+    (worker_root / "42").mkdir(parents=True)
+    monkeypatch.setenv("AGY_BRIDGE_CONTROLLER_CHATS_ROOT", str(controller_root))
+    monkeypatch.setenv("AGY_BRIDGE_CHATS_ROOT", str(worker_root))
+    monkeypatch.setenv("HOME", str(agent_home))
+
+    class Policy:
+        execution_mode = "plan"
+
+    class Writer:
+        def __init__(self) -> None:
+            self.events: list[dict[str, object]] = []
+
+        def write(self, raw: bytes) -> None:
+            self.events.append(json.loads(raw))
+
+        async def drain(self) -> None:
+            pass
+
+    async def fake_run_agy(*_args, **_kwargs) -> AgyResult:
+        artifact = agent_home / ".gemini/antigravity-cli/brain/turn/image.png"
+        artifact.parent.mkdir(parents=True)
+        artifact.write_bytes(b"png")
+        return AgyResult("done", 0, "", "SUCCESS", "conversation")
+
+    staged: list[tuple[Path, Path]] = []
+
+    def fake_stage(source: Path, _before: object, destination: str) -> None:
+        staged.append((source, Path(destination)))
+
+    monkeypatch.setattr(worker, "load_access_policy", lambda: Policy())
+    monkeypatch.setattr(worker, "run_agy", fake_run_agy)
+    monkeypatch.setattr(worker, "stage_new_outputs", fake_stage)
+    writer = Writer()
+
+    await worker._run_request({
+        "prompt": "make image", "chat_dir": str(controller_root / "42"),
+        "model": "", "conversation_id": "",
+    }, writer)
+
+    assert staged == [(
+        agent_home / ".gemini/antigravity-cli/brain", worker_root / "42",
+    )]
+    assert writer.events[-1]["type"] == "result"
 
 
 def test_worker_failure_reason_never_returns_raw_cli_output() -> None:

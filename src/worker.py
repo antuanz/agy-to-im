@@ -22,6 +22,7 @@ from src.models import (
     _read_capped,
     parse_model_slugs,
 )
+from src.output_files import WorkspaceSnapshot, snapshot_workspace_files, stage_new_outputs
 from src.processes import process_group_options, terminate_process_group
 from src.state import is_valid_model, normalize_conversation_id
 
@@ -37,6 +38,7 @@ _WORKER_LOCK = asyncio.Lock()
 # the last known catalogue with an explicit stale warning.
 _MODEL_CACHE: tuple[str, ...] = ()
 _MODEL_CACHE_AT = 0.0
+_ARTIFACTS_RELATIVE_PATH = Path(".gemini/antigravity-cli/brain")
 
 
 def _socket_path() -> Path:
@@ -95,6 +97,21 @@ def _valid_conversation_id(value: object) -> str | None:
         return None
     normalized = normalize_conversation_id(value)
     return normalized if normalized == value else None
+
+
+def _artifact_root() -> Path | None:
+    """Return the worker-only agy artifact directory, never a supplied path."""
+    home = Path(os.environ.get("HOME", ""))
+    if not home.is_absolute():
+        return None
+    root = home / _ARTIFACTS_RELATIVE_PATH
+    try:
+        root.mkdir(mode=0o700, parents=True, exist_ok=True)
+        if root.is_symlink() or not root.is_dir():
+            return None
+        return root.resolve(strict=True)
+    except OSError:
+        return None
 
 
 async def _send(writer: asyncio.StreamWriter, event: dict[str, object]) -> None:
@@ -160,12 +177,23 @@ async def _run_request(request: dict[str, Any], writer: asyncio.StreamWriter) ->
     async def on_output(text: str) -> None:
         await _send(writer, {"type": "delta", "text": text})
 
+    artifact_root = _artifact_root()
+    artifact_before = (
+        snapshot_workspace_files(artifact_root)
+        if artifact_root is not None else WorkspaceSnapshot(frozenset(), False)
+    )
     async with _WORKER_LOCK:
         result = await run_agy(
             prompt, chat_dir=chat_dir, conversation_id=conversation_id, model=model,
             mode=policy.execution_mode, agy_path=os.environ.get("AGY_BIN", "agy"),
             timeout=900.0, on_output=on_output, access=policy,
         )
+    # Image generation and other agy features can save output under the
+    # worker-only brain directory instead of cwd.  Stage only files proven new
+    # during this successful turn; the controller will still apply its normal
+    # bounded upload checks to the shared chat workspace.
+    if result.exit_code == 0 and artifact_root is not None:
+        stage_new_outputs(artifact_root, artifact_before, chat_dir)
     # stderr may contain credentials, paths, or prompt fragments; never transfer it.
     await _send(writer, {
         "type": "result", "text": result.text, "exit_code": result.exit_code,
