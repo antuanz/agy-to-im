@@ -6,6 +6,11 @@ from src.agy_runner import AgyResult
 
 SAFE_FAILURE_REASONS = frozenset({
     "authentication unavailable",
+    "selected model is unavailable",
+    "agy launch configuration rejected",
+    "worker runtime configuration unavailable",
+    "worker permission policy rejected the turn",
+    "model service rejected the turn",
     "isolated runtime storage unavailable",
     "worker filesystem policy blocked agy",
     "worker network access failed",
@@ -31,6 +36,20 @@ def safe_failure_reason(result: AgyResult) -> str:
     )):
         return "authentication unavailable"
     if any(marker in detail for marker in (
+        "invalid model selection", "model is not recognized", "unknown model",
+    )):
+        return "selected model is unavailable"
+    if any(marker in detail for marker in (
+        "unknown flag", "unknown option", "flag provided but not defined",
+        "invalid argument", "cannot be used", "cannot be combined",
+        "input format", "output format",
+    )):
+        return "agy launch configuration rejected"
+    if any(marker in detail for marker in (
+        "settings", "configuration", "agent definition", "workspace", "project",
+    )):
+        return "worker runtime configuration unavailable"
+    if any(marker in detail for marker in (
         "read-only file system", "permission denied", "eacces", "enoent",
         "no such file", "cannot create", "mkdir",
     )):
@@ -44,6 +63,14 @@ def safe_failure_reason(result: AgyResult) -> str:
         "could not resolve", "dns", "tls", "certificate",
     )):
         return "worker network access failed"
+    if any(marker in detail for marker in (
+        "permission", "approval", "not allowed", "not authorized",
+    )):
+        return "worker permission policy rejected the turn"
+    if any(marker in detail for marker in (
+        "quota", "rate limit", "resource exhausted", "capacity", "overloaded",
+    )):
+        return "model service rejected the turn"
     if result.status == "INVALID":
         return "agy returned invalid output"
     return "agy execution failed"

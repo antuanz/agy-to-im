@@ -63,3 +63,22 @@ def test_worker_failure_reason_never_returns_raw_cli_output() -> None:
         status="ERROR",
     )
     assert safe_failure_reason(result) == "isolated runtime storage unavailable"
+
+
+def test_worker_failure_reason_classifies_cli_setup_without_exposing_detail() -> None:
+    result = AgyResult(
+        text="", exit_code=1,
+        stderr="invalid argument: --input-format cannot be used with this mode",
+        status="ERROR",
+    )
+    assert safe_failure_reason(result) == "agy launch configuration rejected"
+    assert "argument" not in safe_failure_reason(result)
+
+
+def test_worker_failure_reason_classifies_missing_runtime_settings() -> None:
+    result = AgyResult(
+        text="", exit_code=1,
+        stderr="unable to load workspace configuration",
+        status="ERROR",
+    )
+    assert safe_failure_reason(result) == "worker runtime configuration unavailable"
