@@ -10,7 +10,11 @@ import pytest
 from src.agy_runner import AgyResult
 from src.config import AgyConfig, Config, TelegramConfig
 from src.state import ChatState
-from src.turn import _DraftPublisher, execute_agy
+from src.turn import (
+    CLOSED_CONTEXT_BLOCKED_EXIT_CODE,
+    _DraftPublisher,
+    execute_agy,
+)
 
 
 @dataclass(frozen=True)
@@ -72,7 +76,8 @@ async def test_execute_agy_returns_reply_and_records_metrics(monkeypatch: pytest
     assert code == 0
     assert text == "reply text"
     assert tg.actions
-    assert calls[0]["prompt"] == "hello"
+    assert calls[0]["prompt"].endswith("hello")
+    assert "# Closed Context Mode" in calls[0]["prompt"]
     assert calls[0]["chat_dir"] == "/tmp/chat"
     assert cs.conversation_id == "123e4567-e89b-12d3-a456-426614174000"
     assert cs.has_session is True
@@ -90,6 +95,22 @@ async def test_execute_agy_returns_timeout_reply(monkeypatch: pytest.MonkeyPatch
     text, code = await execute_agy(tg, 42, _FakeMsg(), cs, cfg, "/usr/bin/agy")
     assert code == 124
     assert text == ""
+
+
+async def test_execute_agy_returns_closed_context_reply_for_denied_restricted_turn(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    async def fake_run_agy(**_: Any) -> AgyResult:
+        return AgyResult("", 1, "agy result contains denied actions", "DENIED")
+
+    monkeypatch.setattr("src.turn.run_agy", fake_run_agy)
+    tg = _FakeTG()
+    cs = ChatState(chat_dir="/tmp/chat")
+    cfg = Config(telegram=TelegramConfig(bot_token="t", allowed_user_ids=[42]), agy=AgyConfig())
+    text, code = await execute_agy(tg, 42, _FakeMsg(), cs, cfg, "/usr/bin/agy")
+
+    assert code == CLOSED_CONTEXT_BLOCKED_EXIT_CODE
+    assert text == "I can't help with questions about the execution environment."
 
 
 async def test_private_chat_streams_drafts_without_typing_heartbeat(

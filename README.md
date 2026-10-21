@@ -57,6 +57,14 @@ boundary. On VMs where unprivileged user namespaces are blocked, this deliberate
 CLI's incompatible `--sandbox` flag. See the VM deployment documentation for the root-only profile
 commands and workspace mount templates.
 
+Restricted profiles also prepend a fixed **Closed Context Mode** instruction to every turn. It
+limits the conversation to user-provided task materials and tells the agent not to inspect or
+disclose execution-environment details. This is a usability layer, not a replacement for the OS
+boundary. If a restricted-profile turn nevertheless attempts a denied tool action, the bridge
+returns `I can't help with questions about the execution environment.` instead of a raw `agy`
+exit-code message. The instruction is intentionally not applied to the explicit root-selected
+`host` profile.
+
 ### Quickstart
 
 You need: Linux with `systemd --user`, Python ≥3.11, `uv`, a working `agy` CLI on `PATH`, and an authenticated `agy` session.

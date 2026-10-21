@@ -287,7 +287,7 @@ async def run_agy(
         return AgyResult(events.deltas, exit_code or 1, _join_errors(stderr, error), status)
     denied_actions = terminal.get("denied_actions", [])
     if not isinstance(denied_actions, list) or denied_actions:
-        return AgyResult(events.deltas, 1, _join_errors(stderr, "agy result contains denied actions"), "INVALID")
+        return AgyResult(events.deltas, 1, _join_errors(stderr, "agy result contains denied actions"), "DENIED")
     response = terminal.get("response")
     if not isinstance(response, str):
         return AgyResult(events.deltas, 1, _join_errors(stderr, "agy result has no valid response"), "INVALID")

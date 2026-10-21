@@ -9,6 +9,11 @@ import time
 from typing import TYPE_CHECKING, Callable
 
 from src.agy_runner import run_agy
+from src.closed_context import (
+    CLOSED_CONTEXT_REPLY,
+    add_closed_context_instruction,
+    is_closed_context_denial,
+)
 from src.diagnostics import safe_failure_reason
 from src.worker_client import run_worker_job
 from src.commands import effective_model_value
@@ -21,6 +26,9 @@ if TYPE_CHECKING:
 
 LOG = logging.getLogger("antigravity_telegram_bridge")
 AGY_TIMEOUT_S = 900.0
+# Internal outcome: a restricted-profile tool denial becomes the fixed
+# closed-context reply without counting as an agy/model-service failure.
+CLOSED_CONTEXT_BLOCKED_EXIT_CODE = 125
 
 
 async def _compile_memory_layer(chat_dir: str) -> None:
@@ -66,19 +74,20 @@ async def execute_agy(
         hb_stop = asyncio.Event()
         hb_task = asyncio.create_task(_heartbeat(tg, chat_id, hb_stop))
     turn_start = time.perf_counter()
+    prompt = add_closed_context_instruction(msg.text, cfg.access)
     try:
         worker_socket = os.environ.get("AGY_BRIDGE_WORKER_SOCKET", "")
         if worker_socket:
             # The Telegram controller cannot invoke agy directly in production.
             result = await run_worker_job(
-                worker_socket, prompt=msg.text, chat_dir=cs.chat_dir,
+                worker_socket, prompt=prompt, chat_dir=cs.chat_dir,
                 conversation_id=cs.conversation_id, model=effective_model_value(cs, cfg),
                 timeout=AGY_TIMEOUT_S, on_output=on_output,
             )
         else:
             # Local execution exists only for development and unit tests.
             result = await run_agy(
-                prompt=msg.text,
+                prompt=prompt,
                 chat_dir=cs.chat_dir,
                 conversation_id=cs.conversation_id,
                 model=effective_model_value(cs, cfg),
@@ -107,6 +116,9 @@ async def execute_agy(
             except (asyncio.CancelledError, Exception):
                 pass
     elapsed = int((time.perf_counter() - turn_start) * 1000)
+    if is_closed_context_denial(result, cfg.access):
+        LOG.info("closed-context denial chat=%d ms=%d", chat_id, elapsed)
+        return CLOSED_CONTEXT_REPLY, CLOSED_CONTEXT_BLOCKED_EXIT_CODE
     if result.exit_code != 0:
         LOG.error(
             "turn failed chat=%d exit=%d ms=%d reason=%s",

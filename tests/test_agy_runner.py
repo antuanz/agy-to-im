@@ -189,7 +189,7 @@ def test_sandbox_policy_omits_dangerous_permission_bypass() -> None:
 @pytest.mark.parametrize(
     "case,status", [
         ("non_success", "ERROR"), ("no_result", "INVALID"),
-        ("malformed", "INVALID"), ("denied", "INVALID"),
+        ("malformed", "INVALID"), ("denied", "DENIED"),
         ("oversized", "INVALID"), ("stderr_oversized", "INVALID"),
     ],
 )

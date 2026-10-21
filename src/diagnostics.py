@@ -30,6 +30,8 @@ def safe_failure_reason(result: AgyResult) -> str:
     detail = result.stderr.lower()
     if result.exit_code == 124 or result.status == "TIMEOUT":
         return "agy timed out"
+    if result.status == "DENIED" or "denied actions" in detail:
+        return "worker permission policy rejected the turn"
     if any(marker in detail for marker in (
         "oauth", "authentication", "unauthenticated", "not logged in",
         "credential", "login required",

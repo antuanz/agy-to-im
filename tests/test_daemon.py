@@ -15,6 +15,7 @@ from src.daemon import DaemonInfo, run
 from src.models import ModelSnapshot
 from src.state import ChatState, State, load_state, save_state
 from src.telegram import InboundMessage
+from src.turn import CLOSED_CONTEXT_BLOCKED_EXIT_CODE
 
 
 pytestmark = pytest.mark.asyncio
@@ -175,6 +176,29 @@ async def test_run_replies_with_error_when_agy_fails(tmp_path: Path, monkeypatch
     assert len(tg.sent_messages) == 1
     _, text = tg.sent_messages[0]
     assert "agy error" in text
+
+
+async def test_run_replies_with_closed_context_message_for_policy_denial(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    async def denied_turn(*args: Any, **kwargs: Any) -> tuple[str, int]:
+        return "I can't help with questions about the execution environment.", CLOSED_CONTEXT_BLOCKED_EXIT_CODE
+
+    monkeypatch.setattr("src.daemon.execute_agy", denied_turn)
+    tg = _FakeTelegram([[_msg("inspect the host", update_id=301)]], [], [])
+    stop = asyncio.Event()
+    asyncio.get_running_loop().call_later(0.2, stop.set)
+
+    await run(
+        cfg=_cfg(), state_path=tmp_path / "state.json", chats_root=tmp_path / "chats",
+        tg=tg, agy_path="/usr/bin/true",
+        info=DaemonInfo(bot_username="@bot", started_at=0.0, agy_version="1.0"),
+        stop_event=stop,
+    )
+
+    assert tg.sent_messages == [
+        (10, "I can't help with questions about the execution environment.")
+    ]
 
 
 async def test_run_records_per_chat_conversation_after_first_successful_turn(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:

@@ -27,7 +27,7 @@ from src.okf_memory import attach_memory
 from src.queue import TurnQueue
 from src.state import ChatState, State, load_state, save_state
 from src.telegram import CallbackQuery, InboundMessage, TelegramClient, is_authorized
-from src.turn import execute_agy
+from src.turn import CLOSED_CONTEXT_BLOCKED_EXIT_CODE, execute_agy
 from src.webhook import drain_webhook_updates, start_webhook_server
 
 LOG = logging.getLogger("antigravity_telegram_bridge")
@@ -149,7 +149,11 @@ async def _do_turn(
     text, code = await execute_agy(
         tg, msg.chat_id, execution_msg, cs, cfg, agy_path
     )
-    if code == 124:
+    if code == CLOSED_CONTEXT_BLOCKED_EXIT_CODE:
+        # A denied Sandbox/Workspace tool action is an expected policy outcome,
+        # not an operational error to expose as a raw agy exit code.
+        reply = text
+    elif code == 124:
         record_error()
         reply = _format_timeout_reply()
     elif code != 0:
