@@ -196,5 +196,13 @@ async def test_callback_mode_choice() -> None:
     cs = _state()
     cq = CallbackQuery(update_id=1, callback_query_id="q", chat_id=42, user_id=42, message_id=1, data="M:plan")
     reply = handle_callback(cq, cs, _cfg())
-    assert cs.mode == "plan"
-    assert "plan" in reply.toast.lower()
+    assert cs.mode == ""
+    assert reply.toast == "Server-managed"
+
+
+async def test_mode_command_cannot_change_server_execution() -> None:
+    cs = _state()
+    reply = await handle_text_command(_FakeMsg("/mode code"), cs, _cfg())
+    assert reply is not None
+    assert "server-managed" in reply.text.lower()
+    assert cs.mode == ""

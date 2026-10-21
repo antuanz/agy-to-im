@@ -15,35 +15,30 @@ if TYPE_CHECKING:
     from src.state import ChatState
     from src.telegram import CallbackQuery, InboundMessage
 
-MODE_CHOICES: tuple[tuple[str, str], ...] = (
-    ("code", "Code (auto)"),
-    ("plan", "Plan (read-only sandbox)"),
-)
 _DEFAULT_TOKEN = "_DEFAULT"
 _CONFIG_TOKEN = "_CONFIG"
 AGY_DEFAULT_LABEL = "Use agy default"
 
 WELCOME_TEXT = (
-    "👋 Welcome! I'm your Antigravity bridge bot.\n\n"
+    "Welcome! I'm your Antigravity bridge bot.\n\n"
     "Send me any message and I'll forward it to the agy CLI. "
     "Each chat has its own session that persists across messages.\n\n"
-    "Commands: /start · /help · /status · /settings · /model · /mode · /reset"
+    "Commands: /start · /help · /status · /settings · /model · /reset"
 )
 
 HELP_TEXT = (
-    "📖 Antigravity Bridge Help\n\n"
+    "Antigravity Bridge Help\n\n"
     "Send any text to chat with agy.\n\n"
     "Commands:\n"
-    "/status   — read-only system + chat summary\n"
+    "/status   — read-only access + chat summary\n"
     "/settings — control panel with buttons\n"
     "/model    — pick a model (per-chat override)\n"
-    "/mode     — pick a mode (Code or Plan)\n"
     "/reset    — fresh agy session for this chat\n"
     "/info     — same as /status\n"
     "/image on|off — toggle photo processing\n"
     "/files    — list recent uploads\n"
     "/start, /help — these messages\n\n"
-    "Per-chat overrides take precedence over config.json."
+    "Model selection is per-chat. VM access is controlled only by the server owner."
 )
 
 
@@ -70,22 +65,16 @@ def _effective_model(cs: "ChatState", cfg: "Config") -> tuple[str, str]:
     return model, "chat" if cs.model is not None else "config"
 
 
-def _effective_mode(cs: "ChatState", cfg: "Config") -> tuple[str, str]:
-    if cs.mode:
-        return cs.mode, "chat"
-    return cfg.agy.mode, "config"
-
-
 def render_status(cs: "ChatState", cfg: "Config") -> str:
     model, model_src = _effective_model(cs, cfg)
-    mode, mode_src = _effective_mode(cs, cfg)
     session = "active (resumes next turn)" if cs.has_session else "fresh (next turn starts new)"
     home = os.path.expanduser("~")
     workdir = cs.chat_dir.replace(home, "~", 1)
     return (
         "🟢 Antigravity Bridge — Status\n"
         f"Model:      {model}  [{model_src}]\n"
-        f"Mode:       {mode}  [{mode_src}]\n"
+        f"Access:     {cfg.access.label}  [{cfg.access.profile}]\n"
+        f"Execution:  {cfg.access.execution_mode}  [server-managed]\n"
         "\n"
         "This chat:\n"
         f"  Session:  {session}\n"
@@ -96,12 +85,9 @@ def render_status(cs: "ChatState", cfg: "Config") -> str:
 
 def _settings_keyboard() -> InlineKeyboard:
     return [
-        [
-            {"text": "🤖 Change model", "callback_data": "nav:model"},
-            {"text": "🛡 Change mode", "callback_data": "nav:mode"},
-        ],
-        [{"text": "🧹 Reset session", "callback_data": "R"}],
-        [{"text": "🔄 Refresh", "callback_data": "nav:settings"}],
+        [{"text": "Model", "callback_data": "nav:model"}],
+        [{"text": "Reset session", "callback_data": "R"}],
+        [{"text": "Refresh", "callback_data": "nav:settings"}],
     ]
 
 
@@ -136,19 +122,6 @@ def _model_keyboard(
     return rows
 
 
-def _mode_keyboard(current_per_chat: str) -> InlineKeyboard:
-    cells: list[dict[str, object]] = []
-    for value, label in MODE_CHOICES:
-        marker = "● " if value == current_per_chat else "○ "
-        cells.append({"text": marker + label, "callback_data": f"M:{value}"})
-    default_marker = "● " if not current_per_chat else "○ "
-    return [
-        cells,
-        [{"text": default_marker + "Use config default", "callback_data": f"M:{_DEFAULT_TOKEN}"}],
-        [{"text": "← Back to settings", "callback_data": "nav:settings"}],
-    ]
-
-
 def _render_settings(cs: "ChatState", cfg: "Config") -> BridgeReply:
     return BridgeReply(text=render_status(cs, cfg), keyboard=_settings_keyboard())
 
@@ -175,14 +148,6 @@ def _render_model_picker(
         keyboard=_model_keyboard(
             cs.model, models, has_config_default=bool(cfg.agy.model)
         ),
-    )
-
-
-def _render_mode_picker(cs: "ChatState", cfg: "Config") -> BridgeReply:
-    cur, src = _effective_mode(cs, cfg)
-    return BridgeReply(
-        text=f"🛡 Choose a mode for this chat\n\nCurrent: {cur}  [{src}]",
-        keyboard=_mode_keyboard(cs.mode),
     )
 
 
@@ -224,12 +189,9 @@ async def handle_text_command(
             return BridgeReply(f"⚠️ Unsupported model: {args}")
         return _render_model_picker(cs, cfg, models, discovery_error)
     if cmd == "/mode":
-        if args:
-            if args in {"code", "plan"}:
-                cs.mode = args
-                return BridgeReply(f"🛡 Mode set to {args}")
-            return BridgeReply(f"⚠️ Unsupported mode: {args}")
-        return _render_mode_picker(cs, cfg)
+        return BridgeReply(
+            "Execution and VM access are server-managed. The owner changes them through SSH."
+        )
     if cmd == "/reset":
         cs.has_session = False
         return BridgeReply("🧹 Session reset. The next message starts fresh.")
@@ -281,7 +243,10 @@ def handle_callback(
     if data == "nav:model":
         return _render_model_picker(cs, cfg, models, discovery_error)
     if data == "nav:mode":
-        return _render_mode_picker(cs, cfg)
+        return BridgeReply(
+            "Execution and VM access are server-managed. The owner changes them through SSH.",
+            toast="Server-managed",
+        )
     if data == "R":
         cs.has_session = False
         rep = _render_settings(cs, cfg)
@@ -306,18 +271,8 @@ def handle_callback(
         return BridgeReply(text=rep.text, keyboard=rep.keyboard, toast=toast)
 
     if data.startswith("M:"):
-        choice = data[2:]
-        valid_modes = {v for v, _ in MODE_CHOICES}
-        if choice == _DEFAULT_TOKEN:
-            cs.mode = ""
-            toast = "Using config default"
-        elif choice in valid_modes:
-            cs.mode = choice
-            toast = f"Mode: {choice}"
-        else:
-            toast = "Unknown choice"
         rep = _render_settings(cs, cfg)
-        return BridgeReply(text=rep.text, keyboard=rep.keyboard, toast=toast)
+        return BridgeReply(text=rep.text, keyboard=rep.keyboard, toast="Server-managed")
 
     return _render_settings(cs, cfg)
 

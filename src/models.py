@@ -6,7 +6,7 @@ import re
 import shutil
 import time
 from dataclasses import dataclass
-from typing import Callable
+from collections.abc import Awaitable, Callable
 
 from src.state import is_valid_model
 from src.processes import process_group_options, terminate_process_group
@@ -54,6 +54,7 @@ class ModelCatalog:
         *,
         ttl: float = MODEL_CACHE_TTL_S,
         clock: Callable[[], float] = time.monotonic,
+        discover: Callable[[], Awaitable[ModelSnapshot]] | None = None,
     ) -> None:
         self._agy_path = shutil.which(agy_path) or agy_path
         self._ttl = ttl
@@ -61,6 +62,7 @@ class ModelCatalog:
         self._models: tuple[str, ...] | None = None
         self._cached_at = 0.0
         self._lock = asyncio.Lock()
+        self._discover_override = discover
 
     async def get(self) -> ModelSnapshot:
         now = self._clock()
@@ -71,7 +73,10 @@ class ModelCatalog:
             now = self._clock()
             if self._models is not None and now - self._cached_at < self._ttl:
                 return ModelSnapshot(self._models)
-            snapshot = await self._discover()
+            if self._discover_override is None:
+                snapshot = await self._discover()
+            else:
+                snapshot = await self._discover_override()
             if snapshot.models:
                 self._models = snapshot.models
                 self._cached_at = self._clock()

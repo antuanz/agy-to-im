@@ -1,0 +1,66 @@
+"""Protocol tests for the token-free isolated worker client."""
+from __future__ import annotations
+
+import asyncio
+import json
+import os
+from pathlib import Path
+
+import pytest
+
+from src.worker_client import discover_worker_models, run_worker_job
+
+
+pytestmark = pytest.mark.skipif(os.name == "nt", reason="Unix-domain sockets require POSIX")
+
+
+async def test_worker_job_streams_drafts_and_final_result(tmp_path: Path) -> None:
+    socket = tmp_path / "worker.sock"
+
+    async def handler(reader: asyncio.StreamReader, writer: asyncio.StreamWriter) -> None:
+        request = json.loads(await reader.readline())
+        assert request["op"] == "run"
+        for event in (
+            {"type": "delta", "text": "hello"},
+            {"type": "result", "text": "hello world", "exit_code": 0, "status": "SUCCESS"},
+        ):
+            writer.write(json.dumps(event).encode() + b"\n")
+            await writer.drain()
+        writer.close()
+
+    server = await asyncio.start_unix_server(handler, path=str(socket))
+    updates: list[str] = []
+
+    async def on_output(text: str) -> None:
+        updates.append(text)
+
+    try:
+        result = await run_worker_job(
+            str(socket), prompt="hi", chat_dir=str(tmp_path), has_session=False,
+            model="", timeout=1, on_output=on_output,
+        )
+    finally:
+        server.close()
+        await server.wait_closed()
+    assert updates == ["hello"]
+    assert result.text == "hello world"
+    assert result.exit_code == 0
+
+
+async def test_worker_model_error_is_not_silently_treated_as_empty(tmp_path: Path) -> None:
+    socket = tmp_path / "worker.sock"
+
+    async def handler(reader: asyncio.StreamReader, writer: asyncio.StreamWriter) -> None:
+        assert json.loads(await reader.readline()) == {"op": "models"}
+        writer.write(b'{"type":"models","models":[],"error":"worker unavailable"}\n')
+        await writer.drain()
+        writer.close()
+
+    server = await asyncio.start_unix_server(handler, path=str(socket))
+    try:
+        models, error = await discover_worker_models(str(socket), timeout=1)
+    finally:
+        server.close()
+        await server.wait_closed()
+    assert models == ()
+    assert error == "worker unavailable"

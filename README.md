@@ -19,14 +19,14 @@ Forked from `hah23255/kimi-to-im` and adapted to drive Google's `agy` CLI instea
 ## English
 
 ### What it is
-A Telegram bridge daemon for the Google Antigravity CLI (`agy`), allowing persistent, isolated code editing sessions over Telegram chats. Version: `0.2.0`.
+A Telegram bridge daemon for the Google Antigravity CLI (`agy`), allowing persistent chat sessions over Telegram. Version: `0.2.0`.
 
 ### Features
 | Feature | Status |
 |---|---|
 | Telegram ↔ `agy` messaging | ✅ |
 | Per-chat project isolation (`--new-project` / `--continue`) | ✅ |
-| Inline keyboard control panel (`/settings`, `/model`, `/mode`) | ✅ |
+| Inline keyboard control panel (`/settings`, `/model`, reset) | ✅ |
 | Dynamic model discovery from `agy models` with stale-selection protection | ✅ |
 | Safe rich Markdown replies with plain-text fallback | ✅ |
 | Live private-chat response drafts from `agy` stream JSON | ✅ |
@@ -38,9 +38,23 @@ A Telegram bridge daemon for the Google Antigravity CLI (`agy`), allowing persis
 | Multi-user FIFO turn queue | ✅ |
 | Webhook mode with HMAC verification | ✅ |
 | Health endpoint (`/health`) and Prometheus metrics (`/metrics`) | ✅ |
-| `systemd --user` service with hardening | ✅ |
+| Server-managed worker profile for hardened VM deployments | ✅ |
 | Plugin tool for `agy` (`bridge start/stop/status/logs/setup`) | ✅ |
 | 105 tests, 100 % pass | ✅ |
+
+### Server-managed security
+
+The VM deployment separates the Telegram controller from an isolated `agy` worker. The controller
+holds the Telegram credential but cannot execute `agy`; it sends bounded jobs through one Unix
+socket. The worker never receives that credential and starts each CLI child with an allowlisted
+environment.
+
+The active access profile is supplied only by a root-owned server policy. Telegram commands,
+buttons, chat state, and `config.json` cannot select or elevate it. `sandbox` and `workspace`
+always force `agy --mode plan --sandbox` without `--dangerously-skip-permissions`; only the
+root-selected `host` profile may use unattended tool approval. A production worker must run in an
+OS-level filesystem boundary. See the VM deployment documentation for the root-only profile
+commands and workspace mount templates.
 
 ### Quickstart
 
@@ -88,8 +102,9 @@ For the full step-by-step guide see `docs/deployment.md`. Day-to-day operations 
 * `/start` - Welcome message
 * `/help` - Usage help
 * `/status` / `/info` - Session summary
-* `/settings` - Inline control panel (model, mode, reset)
+* `/settings` - Inline control panel (model and session reset)
 * `/model [slug]` - Select a currently available model or use the `agy` default
+* `/mode` - Shows that execution access is server-managed; it cannot change it
 * `/reset` - Start a fresh `agy` project for this chat
 * `/image on|off` - Toggle photo processing
 * `/files` - List inbox files
@@ -101,15 +116,18 @@ For the full step-by-step guide see `docs/deployment.md`. Day-to-day operations 
 flowchart LR
     User([📱 You on Telegram])
     TG[Telegram Bot API]
-    Bridge[bridge daemon<br/>Python / systemd --user]
+    Bridge[Telegram controller<br/>token only]
+    Worker[isolated worker<br/>root-supervised]
     Agy[agy CLI subprocess<br/>per turn]
     State[(state.json<br/>chat → project dir)]
     Health[health + metrics<br/>:9100]
 
     User -->|message| TG
     TG -->|long-poll / webhook| Bridge
-    Bridge -->|stream-json user event| Agy
-    Agy -->|agent response deltas| Bridge
+    Bridge -->|bounded Unix socket job| Worker
+    Worker -->|stream-json user event| Agy
+    Agy -->|agent response deltas| Worker
+    Worker -->|final result / draft deltas| Bridge
     Bridge -->|rich draft + final rich message| TG
     TG -->|reply| User
     Bridge <-->|read/write| State

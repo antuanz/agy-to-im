@@ -22,6 +22,7 @@ from src.config import Config, load_config
 from src.health import memory_healthy, record_error, record_turn, start_server
 from src.media import build_media_prompt, clean_inbox
 from src.models import ModelCatalog, ModelSnapshot
+from src.worker_client import discover_worker_models
 from src.okf_memory import attach_memory
 from src.queue import TurnQueue
 from src.state import ChatState, State, load_state, save_state
@@ -79,6 +80,9 @@ def _resolve_chats_root(cfg: Config) -> Path:
 
 
 def _detect_agy_version(agy_path: str) -> str:
+    if os.environ.get("AGY_BRIDGE_WORKER_SOCKET"):
+        # Only the isolated worker is allowed to execute the CLI in production.
+        return "managed worker"
     try:
         out = subprocess.run(
             [agy_path, "--version"],
@@ -296,7 +300,14 @@ async def run(
     _QUEUE.cooldown_seconds = cfg.safety.queue.cooldown_seconds
     chats_root.mkdir(parents=True, exist_ok=True)
     state = load_state(state_path, chats_root)
-    catalog = ModelCatalog(agy_path)
+    worker_socket = os.environ.get("AGY_BRIDGE_WORKER_SOCKET", "")
+    if worker_socket:
+        async def discover() -> ModelSnapshot:
+            models, error = await discover_worker_models(worker_socket)
+            return ModelSnapshot(models, error)
+        catalog = ModelCatalog(agy_path, discover=discover)
+    else:
+        catalog = ModelCatalog(agy_path)
     tick = 0
     async with tg:
         while not stop_event.is_set():

@@ -75,10 +75,17 @@ def _fake_agy(tmp_path: Path) -> Path:
 
 
 def _env_for_fake(monkeypatch: pytest.MonkeyPatch, tmp_path: Path, case: str) -> None:
-    monkeypatch.setenv("ARGV_FILE", str(tmp_path / "argv.json"))
-    monkeypatch.setenv("INPUT_FILE", str(tmp_path / "input.jsonl"))
-    monkeypatch.setenv("FAKE_AGY_CASE", case)
-    monkeypatch.setenv("CHILD_MARKER", str(tmp_path / "child-alive"))
+    # Production deliberately gives agy an allowlisted environment. Tests inject
+    # only the four values needed by the fake executable through that same seam.
+    monkeypatch.setattr(
+        "src.agy_runner._child_environment",
+        lambda: {
+            "ARGV_FILE": str(tmp_path / "argv.json"),
+            "INPUT_FILE": str(tmp_path / "input.jsonl"),
+            "FAKE_AGY_CASE": case,
+            "CHILD_MARKER": str(tmp_path / "child-alive"),
+        },
+    )
 
 
 async def test_streams_only_agent_text_and_sends_user_event(
@@ -148,6 +155,16 @@ def test_build_args_includes_exact_selected_model() -> None:
     assert args[args.index("--model") + 1] == "gemini-4-argon-high"
     assert "--new-project" in args
     assert "-p" not in args
+
+
+def test_sandbox_policy_omits_dangerous_permission_bypass() -> None:
+    args = _build_args(
+        agy_path="/usr/bin/agy", prompt="x", has_session=False,
+        model="", mode="code", print_timeout="15m",
+    )
+    assert "--dangerously-skip-permissions" not in args
+    assert args[args.index("--mode") + 1] == "plan"
+    assert "--sandbox" in args
 
 
 @pytest.mark.parametrize(

@@ -7,6 +7,8 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
 
+from src.access import AccessPolicy, AccessPolicyError, load_access_policy
+
 
 class ConfigError(Exception):
     """Raised when config.json is missing, malformed, or fails validation."""
@@ -79,6 +81,8 @@ class Config:
     telegram: TelegramConfig
     agy: AgyConfig
     safety: SafetyConfig = field(default_factory=SafetyConfig)
+    # Loaded from the server service environment, never from config.json.
+    access: AccessPolicy = field(default_factory=AccessPolicy)
 
 
 def load_config(path: Path) -> Config:
@@ -139,6 +143,11 @@ def load_config(path: Path) -> Config:
             f"agy.mode must be one of {sorted(_VALID_MODES)}, got {mode!r}"
         )
 
+    try:
+        access = load_access_policy()
+    except AccessPolicyError as exc:
+        raise ConfigError(f"invalid server access policy: {exc}") from exc
+
     return Config(
         telegram=TelegramConfig(
             bot_token=bot_token,
@@ -152,6 +161,7 @@ def load_config(path: Path) -> Config:
             mode=mode,
         ),
         safety=_parse_safety(raw.get("safety")),
+        access=access,
     )
 
 

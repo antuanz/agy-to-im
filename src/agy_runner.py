@@ -8,6 +8,7 @@ import shutil
 from collections.abc import Awaitable, Callable
 from dataclasses import dataclass
 
+from src.access import AccessPolicy, load_access_policy
 from src.processes import (
     process_group_options as _process_group_options,
     terminate_process_group as _terminate_process_group,
@@ -40,9 +41,11 @@ def _build_args(
     mode: str,
     print_timeout: str,
     chat_dir: str = "",
+    access: AccessPolicy | None = None,
 ) -> list[str]:
     """Build argv; the prompt is intentionally sent through stdin, not argv."""
-    del prompt, chat_dir
+    del prompt, chat_dir, mode
+    policy = access or load_access_policy()
     args = [
         shutil.which(agy_path) or agy_path,
         "--input-format",
@@ -53,13 +56,30 @@ def _build_args(
     args.append("--continue" if has_session else "--new-project")
     if model:
         args.extend(["--model", model])
-    args.append("--dangerously-skip-permissions")
-    if mode == "plan":
-        args.extend(["--mode", "plan", "--sandbox"])
-    elif mode == "code":
+    if policy.permits_unattended_tools:
+        # Host access is a server-side decision. It still runs as the unprivileged
+        # agy account; it is never a root, sudo, or Docker capability.
+        args.append("--dangerously-skip-permissions")
         args.extend(["--mode", "accept-edits"])
+    else:
+        # Sandbox and workspace runs rely on systemd mount isolation as well as
+        # agy's own sandbox. No Telegram-controlled setting can remove either.
+        args.extend(["--mode", "plan", "--sandbox"])
     args.extend(["--print-timeout", print_timeout])
     return args
+
+
+def _child_environment() -> dict[str, str]:
+    """Give agy only the runtime it needs; never inherit bot credentials."""
+    allowed = (
+        "HOME", "LANG", "LC_ALL", "PATH", "XDG_RUNTIME_DIR",
+        "DBUS_SESSION_BUS_ADDRESS",
+    )
+    child = {key: os.environ[key] for key in allowed if os.environ.get(key)}
+    child["PATH"] = child.get("PATH", "/usr/local/bin:/usr/bin:/bin")
+    child["LANG"] = child.get("LANG", "C.UTF-8")
+    child["AGY_CLI_DISABLE_AUTO_UPDATE"] = "true"
+    return child
 
 
 async def _read_stderr(stream: asyncio.StreamReader) -> tuple[str, bool]:
@@ -164,6 +184,7 @@ async def run_agy(
     timeout: float | None = None,
     print_timeout: str = "15m",
     on_output: OutputCallback | None = None,
+    access: AccessPolicy | None = None,
 ) -> AgyResult:
     """Run one agy turn and return only streamed agent-response text."""
     args = _build_args(
@@ -174,12 +195,13 @@ async def run_agy(
         mode=mode,
         print_timeout=print_timeout,
         chat_dir=chat_dir,
+        access=access,
     )
     try:
         proc = await asyncio.create_subprocess_exec(
             *args,
             cwd=chat_dir,
-            env=os.environ.copy(),
+            env=_child_environment(),
             stdin=asyncio.subprocess.PIPE,
             stdout=asyncio.subprocess.PIPE,
             stderr=asyncio.subprocess.PIPE,

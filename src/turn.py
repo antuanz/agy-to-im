@@ -3,11 +3,13 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import os
 import secrets
 import time
 from typing import TYPE_CHECKING, Callable
 
 from src.agy_runner import run_agy
+from src.worker_client import run_worker_job
 from src.commands import effective_model_value
 
 if TYPE_CHECKING:
@@ -64,17 +66,31 @@ async def execute_agy(
         hb_task = asyncio.create_task(_heartbeat(tg, chat_id, hb_stop))
     turn_start = time.perf_counter()
     try:
-        result = await run_agy(
-            prompt=msg.text,
-            chat_dir=cs.chat_dir,
-            has_session=cs.has_session,
-            model=effective_model_value(cs, cfg),
-            mode=cs.mode or cfg.agy.mode,
-            agy_path=agy_path,
-            timeout=AGY_TIMEOUT_S,
-            on_output=on_output,
-        )
-        if result.exit_code == 0:
+        worker_socket = os.environ.get("AGY_BRIDGE_WORKER_SOCKET", "")
+        if worker_socket:
+            # The Telegram controller cannot invoke agy directly in production.
+            result = await run_worker_job(
+                worker_socket, prompt=msg.text, chat_dir=cs.chat_dir,
+                has_session=cs.has_session, model=effective_model_value(cs, cfg),
+                timeout=AGY_TIMEOUT_S, on_output=on_output,
+            )
+        else:
+            # Local execution exists only for development and unit tests.
+            result = await run_agy(
+                prompt=msg.text,
+                chat_dir=cs.chat_dir,
+                has_session=cs.has_session,
+                model=effective_model_value(cs, cfg),
+                # Execution policy is selected by the root-owned service.
+                mode=cfg.access.execution_mode,
+                agy_path=agy_path,
+                timeout=AGY_TIMEOUT_S,
+                on_output=on_output,
+                access=cfg.access,
+            )
+        # graphify is a local process and must never run in the token-holding
+        # controller service. The production worker protocol does not expose it.
+        if result.exit_code == 0 and not worker_socket:
             asyncio.create_task(_compile_memory_layer(cs.chat_dir))
     finally:
         if publisher is not None:
