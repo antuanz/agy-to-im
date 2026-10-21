@@ -321,7 +321,12 @@ async def _fetch_updates(tg: _TelegramLike, offset: int) -> list[dict[str, Any]]
 
 
 async def _register_command_menu(tg: _TelegramLike, cfg: Config) -> None:
-    """Expose only safe commands to each explicitly allowlisted chat member."""
+    """Expose only safe commands to each explicitly allowlisted chat.
+
+    Telegram does not permit the ``chat_member`` command scope in private
+    chats.  ``chat`` is the narrowest valid scope there.  The bridge still
+    authorizes each incoming message separately, so the menu grants nothing.
+    """
     chat_ids = cfg.telegram.allowed_chat_ids
     if not chat_ids:
         # A global menu would not grant access, but exposing an interface on an
@@ -330,14 +335,13 @@ async def _register_command_menu(tg: _TelegramLike, cfg: Config) -> None:
         LOG.info("command menu not registered: no allowed_chat_ids configured")
         return
     for chat_id in chat_ids:
-        for user_id in cfg.telegram.allowed_user_ids:
-            scope = {"type": "chat_member", "chat_id": chat_id, "user_id": user_id}
-            try:
-                await tg.set_my_commands(SAFE_COMMAND_MENU, scope=scope)
-            except Exception as err:
-                # A command menu is convenience only; a temporary Bot API
-                # failure must never stop the owner from using the bridge.
-                LOG.warning("setMyCommands failed for configured chat member: %s", err)
+        scope = {"type": "chat", "chat_id": chat_id}
+        try:
+            await tg.set_my_commands(SAFE_COMMAND_MENU, scope=scope)
+        except Exception as err:
+            # A command menu is convenience only; a temporary Bot API failure
+            # must never stop the owner from using the bridge.
+            LOG.warning("setMyCommands failed for configured chat: %s", err)
 
 
 async def run(

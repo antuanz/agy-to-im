@@ -61,13 +61,13 @@ async def test_send_message_skips_empty_text(httpx_mock: HTTPXMock) -> None:
     assert httpx_mock.get_requests() == []
 
 
-async def test_set_my_commands_posts_scoped_safe_menu(httpx_mock: HTTPXMock) -> None:
+async def test_set_my_commands_posts_chat_scoped_safe_menu(httpx_mock: HTTPXMock) -> None:
     httpx_mock.add_response(
         url="https://api.telegram.org/botTOKEN/setMyCommands",
         method="POST", json={"ok": True, "result": True},
     )
     commands = [{"command": "help", "description": "Show help"}]
-    scope = {"type": "chat_member", "chat_id": 10, "user_id": 42}
+    scope = {"type": "chat", "chat_id": 10}
     async with TelegramClient("TOKEN") as tg:
         await tg.set_my_commands(commands, scope=scope)
     payload = json.loads(httpx_mock.get_requests()[0].content)

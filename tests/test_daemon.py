@@ -145,7 +145,7 @@ async def test_run_replies_to_authorized_message(tmp_path: Path, monkeypatch: py
     assert 10 in persisted.chats
 
 
-async def test_run_registers_menu_only_for_allowlisted_chat_members(tmp_path: Path) -> None:
+async def test_run_registers_menu_only_for_allowlisted_chats(tmp_path: Path) -> None:
     cfg = Config(
         telegram=TelegramConfig(
             bot_token="TOKEN", allowed_user_ids=[42], allowed_chat_ids=[10],
@@ -168,7 +168,7 @@ async def test_run_registers_menu_only_for_allowlisted_chat_members(tmp_path: Pa
     assert [command["command"] for command in commands] == [
         "start", "help", "model", "settings", "reset",
     ]
-    assert scope == {"type": "chat_member", "chat_id": 10, "user_id": 42}
+    assert scope == {"type": "chat", "chat_id": 10}
 
 
 async def test_run_sends_only_new_generated_outputs(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:

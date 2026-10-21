@@ -79,7 +79,9 @@ VM paths available.
 ### Native command menu
 
 At controller startup, the bridge registers Telegram's native command menu only
-for every configured `allowed_chat_ids` / `allowed_user_ids` pair. The menu
+for every configured `allowed_chat_ids` entry. The menu uses Telegram's
+private-chat-compatible `chat` scope; message authorization remains separately
+enforced for every update against both allowlists. The menu
 contains `/start`, `/help`, `/model`, `/settings`, and `/reset`. It deliberately
 contains no access-profile or execution control: those remain SSH/root-only
 server settings.
