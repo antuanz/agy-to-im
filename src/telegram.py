@@ -4,7 +4,7 @@ from __future__ import annotations
 import mimetypes
 from pathlib import Path
 from dataclasses import dataclass
-from typing import Any
+from typing import Any, Mapping, Sequence
 
 from src.config import TelegramConfig
 from src.formatting import chunk_markdown, markdown_to_safe_html
@@ -33,6 +33,17 @@ class CallbackQuery:
 
 # Telegram inline keyboards are nested lists of dicts: list[list[Button]].
 InlineKeyboard = list[list[dict[str, Any]]]
+BotCommand = dict[str, str]
+
+# This is an interface convenience only.  It deliberately has no command that
+# can change the worker's server-owned access or execution policy.
+SAFE_COMMAND_MENU: tuple[BotCommand, ...] = (
+    {"command": "start", "description": "Welcome and safe usage"},
+    {"command": "help", "description": "Show help and examples"},
+    {"command": "model", "description": "Choose a model for this chat"},
+    {"command": "settings", "description": "Show model and session status"},
+    {"command": "reset", "description": "Start a fresh chat session"},
+)
 
 
 def parse_update(update: dict[str, Any]) -> InboundMessage | None:
@@ -169,6 +180,23 @@ class TelegramClient:
         if not data.get("ok"):
             raise RuntimeError(f"telegram getUpdates failed: {data.get('description')}")
         return list(data.get("result") or [])
+
+    async def set_my_commands(
+        self,
+        commands: Sequence[Mapping[str, str]],
+        *,
+        scope: Mapping[str, int | str],
+    ) -> None:
+        """Register a scoped native Telegram command menu."""
+        assert self._client is not None
+        payload = {
+            "commands": [dict(command) for command in commands],
+            "scope": dict(scope),
+        }
+        response = await self._client.post(f"{self._base}/setMyCommands", json=payload)
+        data = response.json()
+        if not data.get("ok") or data.get("result") is not True:
+            raise RuntimeError(f"setMyCommands failed: {data.get('description')}")
 
     async def send_message(
         self,

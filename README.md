@@ -76,6 +76,14 @@ it sends no generated file. The worker reads artifacts only from its fixed, isol
 directory and copies them into a new chat-workspace directory; this feature does not make arbitrary
 VM paths available.
 
+### Native command menu
+
+At controller startup, the bridge registers Telegram's native command menu only
+for every configured `allowed_chat_ids` / `allowed_user_ids` pair. The menu
+contains `/start`, `/help`, `/model`, `/settings`, and `/reset`. It deliberately
+contains no access-profile or execution control: those remain SSH/root-only
+server settings.
+
 Restricted profiles also prepend a fixed **Closed Context Mode** instruction to every turn. It
 limits the conversation to user-provided task materials and tells the agent not to inspect or
 disclose execution-environment details. This is a usability layer, not a replacement for the OS

@@ -27,6 +27,7 @@ class _FakeTelegram:
     sent_messages: list[tuple[int, str]]
     chat_actions: list[tuple[int, str]]
     sent_files: list[tuple[str, int, str]] | None = None
+    command_menus: list[tuple[list[dict[str, str]], dict[str, int | str]]] | None = None
 
     async def __aenter__(self) -> "_FakeTelegram":
         return self
@@ -39,6 +40,13 @@ class _FakeTelegram:
             return self.updates_to_serve.pop(0)
         await asyncio.sleep(0)
         return []
+
+    async def set_my_commands(
+        self, commands: list[dict[str, str]], *, scope: dict[str, int | str],
+    ) -> None:
+        if self.command_menus is None:
+            self.command_menus = []
+        self.command_menus.append((commands, scope))
 
     async def send_message(self, chat_id: int, text: str, *, keyboard: Any | None = None) -> int | None:
         self.sent_messages.append((chat_id, text))
@@ -135,6 +143,32 @@ async def test_run_replies_to_authorized_message(tmp_path: Path, monkeypatch: py
     persisted = load_state(state_path, chats_root)
     assert persisted.last_update_id == 100
     assert 10 in persisted.chats
+
+
+async def test_run_registers_menu_only_for_allowlisted_chat_members(tmp_path: Path) -> None:
+    cfg = Config(
+        telegram=TelegramConfig(
+            bot_token="TOKEN", allowed_user_ids=[42], allowed_chat_ids=[10],
+        ),
+        agy=AgyConfig(default_workdir="/tmp", model="", mode="code"),
+    )
+    tg = _FakeTelegram([], [], [])
+    stop = asyncio.Event()
+    asyncio.get_running_loop().call_soon(stop.set)
+
+    await run(
+        cfg=cfg, state_path=tmp_path / "state.json", chats_root=tmp_path / "chats",
+        tg=tg, agy_path="/usr/bin/true",
+        info=DaemonInfo(bot_username="@bot", started_at=0.0, agy_version="1.0"),
+        stop_event=stop,
+    )
+
+    assert tg.command_menus is not None
+    commands, scope = tg.command_menus[0]
+    assert [command["command"] for command in commands] == [
+        "start", "help", "model", "settings", "reset",
+    ]
+    assert scope == {"type": "chat_member", "chat_id": 10, "user_id": 42}
 
 
 async def test_run_sends_only_new_generated_outputs(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:

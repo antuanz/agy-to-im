@@ -27,7 +27,9 @@ from src.okf_memory import attach_memory
 from src.output_files import discover_new_outputs, snapshot_workspace_files
 from src.queue import TurnQueue
 from src.state import ChatState, State, load_state, save_state
-from src.telegram import CallbackQuery, InboundMessage, TelegramClient, is_authorized
+from src.telegram import (
+    SAFE_COMMAND_MENU, CallbackQuery, InboundMessage, TelegramClient, is_authorized,
+)
 from src.turn import CLOSED_CONTEXT_BLOCKED_EXIT_CODE, execute_agy
 from src.webhook import drain_webhook_updates, start_webhook_server
 
@@ -46,6 +48,9 @@ class _TelegramLike(Protocol):
     async def __aexit__(self, *exc: object) -> None: ...
     async def get_me(self) -> dict[str, Any]: ...
     async def get_updates(self, offset: int, timeout: int = 30) -> list[dict[str, Any]]: ...
+    async def set_my_commands(
+        self, commands: Any, *, scope: dict[str, int | str],
+    ) -> None: ...
     async def send_message(
         self, chat_id: int, text: str, *, keyboard: Any | None = None
     ) -> int | None: ...
@@ -315,6 +320,26 @@ async def _fetch_updates(tg: _TelegramLike, offset: int) -> list[dict[str, Any]]
         return []
 
 
+async def _register_command_menu(tg: _TelegramLike, cfg: Config) -> None:
+    """Expose only safe commands to each explicitly allowlisted chat member."""
+    chat_ids = cfg.telegram.allowed_chat_ids
+    if not chat_ids:
+        # A global menu would not grant access, but exposing an interface on an
+        # otherwise default-deny bot is unnecessary. The VM setup requires the
+        # owner to configure chat allowlists before enabling the controller.
+        LOG.info("command menu not registered: no allowed_chat_ids configured")
+        return
+    for chat_id in chat_ids:
+        for user_id in cfg.telegram.allowed_user_ids:
+            scope = {"type": "chat_member", "chat_id": chat_id, "user_id": user_id}
+            try:
+                await tg.set_my_commands(SAFE_COMMAND_MENU, scope=scope)
+            except Exception as err:
+                # A command menu is convenience only; a temporary Bot API
+                # failure must never stop the owner from using the bridge.
+                LOG.warning("setMyCommands failed for configured chat member: %s", err)
+
+
 async def run(
     *, cfg: Config, state_path: Path, chats_root: Path,
     tg: _TelegramLike, agy_path: str, info: DaemonInfo,
@@ -338,6 +363,7 @@ async def run(
         catalog = ModelCatalog(agy_path)
     tick = 0
     async with tg:
+        await _register_command_menu(tg, cfg)
         while not stop_event.is_set():
             tick += 1
             # Health gate: check memory every ~30 loop iterations (~30s at idle,
