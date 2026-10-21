@@ -152,17 +152,12 @@ def _render_settings(cs: "ChatState", cfg: "Config") -> BridgeReply:
 def _mode_keyboard(cs: "ChatState", cfg: "Config") -> InlineKeyboard:
     """Offer only modes pre-authorised by the root-owned Sandbox policy."""
     rows: InlineKeyboard = []
-    current, source = effective_execution_mode(cs, cfg)
+    current, _ = effective_execution_mode(cs, cfg)
     labels = {"plan": "Plan", "code": "Execution"}
     for mode in ("plan", "code"):
         if mode in cfg.access.allowed_execution_modes:
             marker = "● " if current == mode else "○ "
             rows.append([{"text": marker + labels[mode], "callback_data": f"e:{mode}"}])
-    default_marker = "● " if source == "server default" else "○ "
-    rows.append([{
-        "text": default_marker + f"Server default ({cfg.access.execution_mode.title()})",
-        "callback_data": "e:default",
-    }])
     rows.append([{"text": "← Back to settings", "callback_data": "nav:settings"}])
     return rows
 
@@ -192,9 +187,6 @@ def _select_execution_mode(cs: "ChatState", cfg: "Config", requested: str) -> st
     """Change only an allowed Sandbox chat preference and return a safe toast."""
     if cfg.access.profile != "sandbox":
         return "Server-managed"
-    if requested == "default":
-        cs.mode = ""
-        return f"Server default: {cfg.access.execution_mode.title()}"
     if requested not in {"plan", "code"} or requested not in cfg.access.allowed_execution_modes:
         return "Mode not allowed"
     cs.mode = requested
@@ -273,11 +265,9 @@ async def handle_text_command(
         if not requested:
             return _render_mode_picker(cs, cfg)
         if requested not in {"plan", "code"}:
-            if requested != "default":
-                return BridgeReply("Use /mode, /mode plan, /mode code, or /mode default.")
+            return BridgeReply("Use /mode, /mode plan, or /mode code.")
         if requested not in cfg.access.allowed_execution_modes:
-            if requested != "default":
-                return BridgeReply(f"This server profile does not allow {requested} execution.")
+            return BridgeReply(f"This server profile does not allow {requested} execution.")
         toast = _select_execution_mode(cs, cfg, requested)
         return BridgeReply(f"{toast}. VM access remains {cfg.access.label}.")
     if cmd == "/reset":

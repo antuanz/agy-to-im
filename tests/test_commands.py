@@ -219,7 +219,7 @@ async def test_mode_command_shows_execution_buttons() -> None:
     reply = await handle_text_command(_FakeMsg("/mode"), _state(), _cfg(access=policy))
     assert reply is not None and reply.keyboard is not None
     assert [row[0]["callback_data"] for row in reply.keyboard] == [
-        "e:plan", "e:code", "e:default", "nav:settings",
+        "e:plan", "e:code", "nav:settings",
     ]
 
 
@@ -249,9 +249,6 @@ async def test_mode_command_changes_only_an_allowed_chat_preference() -> None:
     assert reply is not None
     assert "execution: plan" in reply.text.lower()
     assert cs.mode == "plan"
-    reply = await handle_text_command(_FakeMsg("/mode default"), cs, _cfg(access=policy))
-    assert reply is not None
-    assert cs.mode == ""
 
 
 async def test_mode_command_rejects_mode_not_allowed_by_server_profile() -> None:
