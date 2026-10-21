@@ -9,6 +9,14 @@ from markdown_it import MarkdownIt
 
 RICH_MESSAGE_MAX_CHARS = 30_000
 _FENCE_OPEN_RE = re.compile(r"^( {0,3})(`{3,}|~{3,})([^\r\n]*)(?:\r?\n|$)")
+# ``agy`` sometimes describes a generated artifact using a ``file://`` URL.
+# That URL names the worker's private filesystem and is neither meaningful nor
+# usable in Telegram; the bridge delivers the artifact as a Telegram upload.
+_LOCAL_FILE_MARKDOWN_LINK_RE = re.compile(
+    r"!?\[([^\]\r\n]*)\]\(\s*<?file://[^\s)>]+>?[^)]*\)", re.IGNORECASE,
+)
+_LOCAL_FILE_AUTOLINK_RE = re.compile(r"<file://[^>\r\n]+>", re.IGNORECASE)
+_LOCAL_FILE_URL_RE = re.compile(r"(?<![\w/])file://[^\s<>\[\](){}]+", re.IGNORECASE)
 
 
 def _render_image(tokens: list[object], idx: int, *_: object) -> str:
@@ -27,6 +35,25 @@ _MARKDOWN.renderer.rules["image"] = _render_image
 def markdown_to_safe_html(markdown: str) -> str:
     """Render supported Markdown to HTML without raw HTML or remote media."""
     return _MARKDOWN.render(markdown)
+
+
+def strip_local_file_references(markdown: str) -> str:
+    """Remove worker-local file URLs while retaining a human-readable label.
+
+    A generated file is uploaded separately after a successful turn. Keeping a
+    local URL in the text would expose an internal path and invite the user to
+    click a link Telegram cannot open. This is intentionally applied to both
+    streaming drafts and the final reply.
+    """
+    without_links = _LOCAL_FILE_MARKDOWN_LINK_RE.sub(r"\1", markdown)
+    without_autolinks = _LOCAL_FILE_AUTOLINK_RE.sub("", without_links)
+    return _LOCAL_FILE_URL_RE.sub(_strip_bare_local_file_url, without_autolinks)
+
+
+def _strip_bare_local_file_url(match: re.Match[str]) -> str:
+    """Drop a bare URL but retain ordinary sentence punctuation after it."""
+    value = match.group(0)
+    return value[len(value.rstrip(".,;:!?")):]
 
 
 def chunk_markdown(

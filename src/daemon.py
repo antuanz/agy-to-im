@@ -26,6 +26,7 @@ from src.models import ModelCatalog, ModelSnapshot
 from src.worker_client import discover_worker_models
 from src.okf_memory import attach_memory
 from src.output_files import discover_new_outputs, snapshot_workspace_files
+from src.formatting import strip_local_file_references
 from src.queue import TurnQueue
 from src.state import ChatState, State, load_state, save_state
 from src.telegram import (
@@ -255,6 +256,9 @@ async def _do_turn(
         record_turn()
         cs.turn_count += 1
         reply = text or "(empty reply)"
+    # Artifacts are sent as Telegram documents/photos below. Never expose a
+    # worker-local file:// URL in the accompanying model prose.
+    reply = strip_local_file_references(reply)
     outputs = discover_new_outputs(cs.chat_dir, output_before) if code == 0 else None
     # Post-turn maintenance: update OKF memory layer, clean inbox
     try:

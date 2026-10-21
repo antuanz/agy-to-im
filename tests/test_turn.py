@@ -181,6 +181,16 @@ async def test_private_chat_streams_drafts_without_typing_heartbeat(
     assert tg.drafts[0][2] == "partial"
 
 
+async def test_draft_publisher_removes_worker_local_file_urls() -> None:
+    tg = _FakeTG()
+    publisher = _DraftPublisher(tg, 42, 778, interval=0)
+    await publisher.publish("Created [report.md](file:///home/agy/private/report.md)")
+    await asyncio.sleep(0)
+    await publisher.close()
+
+    assert tg.drafts == [(42, 778, "Created report.md")]
+
+
 async def test_draft_publisher_throttles_and_keeps_one_id() -> None:
     tg = _FakeTG()
     publisher = _DraftPublisher(tg, 42, 777, interval=0.03)

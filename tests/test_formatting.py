@@ -1,7 +1,23 @@
 """Tests for safe Telegram rich-message rendering."""
 from __future__ import annotations
 
-from src.formatting import chunk_markdown, markdown_to_safe_html
+from src.formatting import (
+    chunk_markdown,
+    markdown_to_safe_html,
+    strip_local_file_references,
+)
+
+
+def test_strip_local_file_references_keeps_labels_but_not_worker_paths() -> None:
+    reply = (
+        "Created [report.md](file:///home/agy/telegram-chats/10/report.md).\n"
+        "Preview: ![diagram](file:///var/lib/worker/diagram.png)\n"
+        "Also <file:///tmp/private.txt> and file:///tmp/another.txt."
+    )
+
+    assert strip_local_file_references(reply) == (
+        "Created report.md.\nPreview: diagram\nAlso  and ."
+    )
 
 
 def test_renders_supported_markdown_features() -> None:

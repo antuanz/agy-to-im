@@ -210,7 +210,7 @@ async def test_run_sends_only_new_generated_outputs(tmp_path: Path, monkeypatch:
         (chat_dir / "answer.md").write_text("hello", encoding="utf-8")
         (chat_dir / "chart.png").write_bytes(b"png")
         (chat_dir / "results.bin").write_bytes(b"binary")
-        return "Done", 0
+        return "Created [answer.md](file:///home/agy/telegram-chats/10/answer.md)", 0
 
     chats_root = tmp_path / "chats"
     preexisting = chats_root / "10" / "old.md"
@@ -231,6 +231,7 @@ async def test_run_sends_only_new_generated_outputs(tmp_path: Path, monkeypatch:
         ("photo", 10, "chart.png"),
         ("document", 10, "results.bin"),
     ]
+    assert tg.sent_messages[-1] == (10, "Created answer.md")
 
 
 async def test_run_drops_unauthorized_message(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:

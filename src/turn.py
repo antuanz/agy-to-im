@@ -17,6 +17,7 @@ from src.closed_context import (
     is_restricted_policy_denial,
 )
 from src.diagnostics import safe_failure_reason
+from src.formatting import strip_local_file_references
 from src.worker_client import run_worker_job
 from src.commands import effective_execution_mode, effective_model_value
 
@@ -171,7 +172,10 @@ class _DraftPublisher:
 
     async def publish(self, cumulative_text: str) -> None:
         if not self._closed:
-            self._latest = cumulative_text
+            # Drafts are user-visible too, so apply the same path-redaction as
+            # the final reply. The cumulative stream will replace an earlier
+            # draft once the model completes its Markdown link.
+            self._latest = strip_local_file_references(cumulative_text)
             self._wake.set()
 
     async def close(self, *, timeout: float = 2.0) -> None:
