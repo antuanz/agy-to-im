@@ -26,6 +26,7 @@ class _FakeTelegram:
     updates_to_serve: list[list[dict[str, Any]]]
     sent_messages: list[tuple[int, str]]
     chat_actions: list[tuple[int, str]]
+    sent_files: list[tuple[str, int, str]] | None = None
 
     async def __aenter__(self) -> "_FakeTelegram":
         return self
@@ -60,6 +61,16 @@ class _FakeTelegram:
 
     async def send_chat_action(self, chat_id: int, action: str = "typing") -> None:
         self.chat_actions.append((chat_id, action))
+
+    async def send_document(self, chat_id: int, path: Path, filename: str) -> None:
+        if self.sent_files is None:
+            self.sent_files = []
+        self.sent_files.append(("document", chat_id, filename))
+
+    async def send_photo(self, chat_id: int, path: Path, filename: str) -> None:
+        if self.sent_files is None:
+            self.sent_files = []
+        self.sent_files.append(("photo", chat_id, filename))
 
 
 def _msg(text: str, *, update_id: int, user_id: int = 42, chat_id: int = 10) -> dict:
@@ -124,6 +135,30 @@ async def test_run_replies_to_authorized_message(tmp_path: Path, monkeypatch: py
     persisted = load_state(state_path, chats_root)
     assert persisted.last_update_id == 100
     assert 10 in persisted.chats
+
+
+async def test_run_sends_only_new_generated_outputs(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    async def creates_files(tg: Any, chat_id: int, msg: Any, cs: Any, cfg: Any, agy_path: str) -> tuple[str, int]:
+        chat_dir = Path(cs.chat_dir)
+        (chat_dir / "answer.md").write_text("hello", encoding="utf-8")
+        (chat_dir / "chart.png").write_bytes(b"png")
+        return "Done", 0
+
+    chats_root = tmp_path / "chats"
+    preexisting = chats_root / "10" / "old.md"
+    preexisting.parent.mkdir(parents=True)
+    preexisting.write_text("do not send", encoding="utf-8")
+    monkeypatch.setattr("src.daemon.execute_agy", creates_files)
+    tg = _FakeTelegram([[_msg("make files", update_id=101)]], [], [])
+    stop = asyncio.Event()
+    asyncio.get_running_loop().call_later(0.2, stop.set)
+
+    await run(
+        cfg=_cfg(), state_path=tmp_path / "state.json", chats_root=chats_root, tg=tg,
+        agy_path="agy", info=DaemonInfo("@bot", 0.0, "1.0"), stop_event=stop,
+    )
+
+    assert tg.sent_files == [("document", 10, "answer.md"), ("photo", 10, "chart.png")]
 
 
 async def test_run_drops_unauthorized_message(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:

@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import json
+from pathlib import Path
 
 import pytest
 from pytest_httpx import HTTPXMock
@@ -134,6 +135,40 @@ async def test_send_rich_draft_uses_stable_id_without_stop_button(
     assert payload["draft_id"] == 987654
     assert "<strong>partial</strong>" in payload["rich_message"]["html"]
     assert "can_stop" not in payload
+
+
+async def test_send_document_uploads_the_controller_approved_file(
+    tmp_path: Path, httpx_mock: HTTPXMock,
+) -> None:
+    source = tmp_path / "report.md"
+    source.write_text("# Report", encoding="utf-8")
+    httpx_mock.add_response(
+        url="https://api.telegram.org/botTOKEN/sendDocument",
+        method="POST", json={"ok": True, "result": {}},
+    )
+    async with TelegramClient("TOKEN") as tg:
+        await tg.send_document(10, source, "report.md")
+    request = httpx_mock.get_requests()[0]
+    assert request.url.path == "/botTOKEN/sendDocument"
+    body = request.read().decode("utf-8", "replace")
+    assert "report.md" in body
+    assert "# Report" in body
+
+
+async def test_send_photo_uploads_the_controller_approved_file(
+    tmp_path: Path, httpx_mock: HTTPXMock,
+) -> None:
+    source = tmp_path / "chart.png"
+    source.write_bytes(b"not a real png")
+    httpx_mock.add_response(
+        url="https://api.telegram.org/botTOKEN/sendPhoto",
+        method="POST", json={"ok": True, "result": {}},
+    )
+    async with TelegramClient("TOKEN") as tg:
+        await tg.send_photo(10, source, "chart.png")
+    request = httpx_mock.get_requests()[0]
+    assert request.url.path == "/botTOKEN/sendPhoto"
+    assert "chart.png" in request.read().decode("utf-8", "replace")
 
 
 async def test_rich_draft_uses_newest_chunk_when_answer_exceeds_limit(

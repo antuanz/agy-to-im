@@ -24,6 +24,7 @@ from src.media import build_media_prompt, clean_inbox
 from src.models import ModelCatalog, ModelSnapshot
 from src.worker_client import discover_worker_models
 from src.okf_memory import attach_memory
+from src.output_files import discover_new_outputs, snapshot_workspace_files
 from src.queue import TurnQueue
 from src.state import ChatState, State, load_state, save_state
 from src.telegram import CallbackQuery, InboundMessage, TelegramClient, is_authorized
@@ -57,6 +58,8 @@ class _TelegramLike(Protocol):
     ) -> None: ...
     async def answer_callback_query(self, callback_query_id: str, *, text: str = "") -> None: ...
     async def send_chat_action(self, chat_id: int, action: str = "typing") -> None: ...
+    async def send_document(self, chat_id: int, path: Path, filename: str) -> None: ...
+    async def send_photo(self, chat_id: int, path: Path, filename: str) -> None: ...
 
 
 RunAgyFunc = Callable[..., Awaitable[AgyResult]]
@@ -145,6 +148,9 @@ async def _do_turn(
         await tg.send_chat_action(msg.chat_id, "typing")
     except Exception:
         pass
+    # Capture the state after inbound media has been put in .bridge-inbox, so
+    # an uploaded input cannot be renamed and returned as a new agent output.
+    output_before = snapshot_workspace_files(cs.chat_dir)
     execution_msg = replace(msg, text=prompt)
     text, code = await execute_agy(
         tg, msg.chat_id, execution_msg, cs, cfg, agy_path
@@ -163,6 +169,7 @@ async def _do_turn(
         record_turn()
         cs.turn_count += 1
         reply = text or "(empty reply)"
+    outputs = discover_new_outputs(cs.chat_dir, output_before) if code == 0 else None
     # Post-turn maintenance: update OKF memory layer, clean inbox
     try:
         attach_memory(cs.chat_dir, None, bridge_version="0.2.0")
@@ -176,6 +183,25 @@ async def _do_turn(
             await tg.send_message(msg.chat_id, reply)
     except Exception as err:
         LOG.error("sendMessage failed chat=%s: %s", msg.chat_id, err)
+    if outputs is not None:
+        delivery_failed = False
+        for output in outputs.files:
+            try:
+                if output.kind == "photo":
+                    await tg.send_photo(msg.chat_id, output.path, output.filename)
+                else:
+                    await tg.send_document(msg.chat_id, output.path, output.filename)
+            except Exception:
+                delivery_failed = True
+                LOG.warning("generated output delivery failed chat=%s kind=%s", msg.chat_id, output.kind)
+        if outputs.skipped or delivery_failed:
+            try:
+                await tg.send_message(
+                    msg.chat_id,
+                    "⚠️ Some generated files were not sent because they are unsupported or exceed delivery limits.",
+                )
+            except Exception:
+                LOG.warning("generated output warning failed chat=%s", msg.chat_id)
 
 
 async def _process_text(

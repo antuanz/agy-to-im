@@ -31,6 +31,7 @@ A Telegram bridge daemon for the Google Antigravity CLI (`agy`), allowing persis
 | Safe rich Markdown replies with plain-text fallback | ✅ |
 | Live private-chat response drafts from `agy` stream JSON | ✅ |
 | Photo + document upload support with configurable safety routing | ✅ |
+| Return newly generated documents and images to the same Telegram chat | ✅ |
 | Configurable file type allowlist (pass/warn/hold/block per category) | ✅ |
 | Per-user rate limiting with sliding window | ✅ |
 | Memory health gate with automatic self-restart | ✅ |
@@ -56,6 +57,21 @@ always force `agy --mode plan` without `--dangerously-skip-permissions`; only th
 boundary. On VMs where unprivileged user namespaces are blocked, this deliberately replaces the
 CLI's incompatible `--sandbox` flag. See the VM deployment documentation for the root-only profile
 commands and workspace mount templates.
+
+### Generated files and images
+
+After a successful turn, the controller can return documents and images created by the agent in
+that chat's workspace. The worker never receives the Telegram token: it only writes files, while
+the token-owning controller performs the upload. Delivery is intentionally conservative: it sends
+at most five new regular files, each no larger than 20 MiB and 25 MiB in total. Supported images
+(`.jpg`, `.jpeg`, `.png`, `.webp`) are sent as Telegram photos; supported documents (`.txt`, `.md`,
+`.csv`, `.json`, `.pdf`, `.docx`, `.xlsx`, `.pptx`, `.py`) are sent as documents.
+
+The controller compares file identities before and after the turn. It never follows symlinks or
+sends hard links, pre-existing/renamed files, hidden paths, `.bridge-inbox` uploads, OKF memory,
+unsupported types, or files that exceed the limits. If the comparison cannot be completed safely,
+it sends no generated file. This feature does not make arbitrary VM paths available: the worker's
+filesystem boundary still limits it to the chat workspace.
 
 Restricted profiles also prepend a fixed **Closed Context Mode** instruction to every turn. It
 limits the conversation to user-provided task materials and tells the agent not to inspect or

@@ -1,6 +1,8 @@
 """Telegram glue: pure helpers + async HTTP client with media + webhook support."""
 from __future__ import annotations
 
+import mimetypes
+from pathlib import Path
 from dataclasses import dataclass
 from typing import Any
 
@@ -239,6 +241,28 @@ class TelegramClient:
             raise RuntimeError(
                 f"sendRichMessageDraft failed: {data.get('description')}"
             )
+
+    async def _send_upload(
+        self, chat_id: int, method: str, field: str, path: Path, filename: str,
+    ) -> None:
+        """Send a controller-approved local file without exposing its pathname."""
+        assert self._client is not None
+        content_type = mimetypes.guess_type(filename)[0] or "application/octet-stream"
+        with path.open("rb") as handle:
+            response = await self._client.post(
+                f"{self._base}/{method}",
+                data={"chat_id": str(chat_id)},
+                files={field: (filename, handle, content_type)},
+            )
+        data = response.json()
+        if not data.get("ok"):
+            raise RuntimeError(f"{method} failed")
+
+    async def send_document(self, chat_id: int, path: Path, filename: str) -> None:
+        await self._send_upload(chat_id, "sendDocument", "document", path, filename)
+
+    async def send_photo(self, chat_id: int, path: Path, filename: str) -> None:
+        await self._send_upload(chat_id, "sendPhoto", "photo", path, filename)
 
     async def edit_message_text(
         self,
