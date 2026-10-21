@@ -5,6 +5,8 @@ from pathlib import Path
 
 import src.worker as worker
 from src.models import MODEL_CACHE_TTL_S
+from src.agy_runner import AgyResult
+from src.diagnostics import safe_failure_reason
 from src.worker import _valid_chat_dir
 
 
@@ -52,3 +54,12 @@ async def test_worker_uses_last_verified_models_after_refresh_failure(monkeypatc
 
     assert models == ("gemini-3.8-flash-medium",)
     assert error == "worker could not run agy models"
+
+
+def test_worker_failure_reason_never_returns_raw_cli_output() -> None:
+    result = AgyResult(
+        text="", exit_code=1,
+        stderr="EACCES: permission denied /home/agy/private-token",
+        status="ERROR",
+    )
+    assert safe_failure_reason(result) == "isolated runtime storage unavailable"

@@ -85,3 +85,27 @@ async def test_worker_model_warning_is_preserved_with_stale_models(tmp_path: Pat
         await server.wait_closed()
     assert models == ("model-a",)
     assert error == "worker model discovery timed out"
+
+
+async def test_worker_job_accepts_only_fixed_failure_reasons(tmp_path: Path) -> None:
+    socket = tmp_path / "worker.sock"
+
+    async def handler(reader: asyncio.StreamReader, writer: asyncio.StreamWriter) -> None:
+        await reader.readline()
+        writer.write(
+            b'{"type":"result","text":"","exit_code":1,"status":"ERROR",'
+            b'"reason":"authentication unavailable"}\n'
+        )
+        await writer.drain()
+        writer.close()
+
+    server = await asyncio.start_unix_server(handler, path=str(socket))
+    try:
+        result = await run_worker_job(
+            str(socket), prompt="hello", chat_dir="/tmp/chat", has_session=False,
+            model="", timeout=1,
+        )
+    finally:
+        server.close()
+        await server.wait_closed()
+    assert result.stderr == "authentication unavailable"

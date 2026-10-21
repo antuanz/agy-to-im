@@ -163,7 +163,10 @@ async def handle_text_command(
     if not stripped:
         return None
     parts = stripped.split(maxsplit=1)
-    cmd = parts[0].lower()
+    # Telegram may append ``@BotUsername`` to a command, particularly when a
+    # command is invoked from its command menu. Commands remain per-bot, so
+    # treat that suffix exactly like the plain private-chat spelling.
+    cmd = parts[0].lower().partition("@")[0]
     args = parts[1].strip() if len(parts) > 1 else ""
 
     if cmd == "/start":

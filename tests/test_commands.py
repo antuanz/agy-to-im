@@ -71,6 +71,14 @@ async def test_model_picker() -> None:
     )
 
 
+async def test_model_picker_accepts_telegram_bot_suffix() -> None:
+    reply = await handle_text_command(
+        _FakeMsg("/model@AntigravityBot"), _state(), _cfg(), ("model-a",)
+    )
+    assert reply is not None
+    assert "choose a model" in reply.text.lower()
+
+
 async def test_model_set() -> None:
     cs = _state()
     reply = await handle_text_command(

@@ -9,6 +9,7 @@ import time
 from typing import TYPE_CHECKING, Callable
 
 from src.agy_runner import run_agy
+from src.diagnostics import safe_failure_reason
 from src.worker_client import run_worker_job
 from src.commands import effective_model_value
 
@@ -105,13 +106,13 @@ async def execute_agy(
     elapsed = int((time.perf_counter() - turn_start) * 1000)
     if result.exit_code != 0:
         LOG.error(
-            "turn failed chat=%d cwd=%s exit=%d ms=%d stderr=%s",
-            chat_id, cs.chat_dir, result.exit_code, elapsed, result.stderr.strip(),
+            "turn failed chat=%d exit=%d ms=%d reason=%s",
+            chat_id, result.exit_code, elapsed, safe_failure_reason(result),
         )
     else:
         LOG.info(
-            "turn chat=%d cwd=%s exit=%d ms=%d reply_len=%d",
-            chat_id, cs.chat_dir, result.exit_code, elapsed, len(result.text or ""),
+            "turn chat=%d exit=%d ms=%d reply_len=%d",
+            chat_id, result.exit_code, elapsed, len(result.text or ""),
         )
     return result.text or "", result.exit_code
 

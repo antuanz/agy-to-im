@@ -6,6 +6,7 @@ import json
 from collections.abc import Awaitable, Callable
 
 from src.agy_runner import AgyResult
+from src.diagnostics import SAFE_FAILURE_REASONS
 
 
 _LINE_LIMIT = 1_048_576
@@ -65,7 +66,12 @@ async def run_worker_job(
                     status = event.get("status")
                     if not isinstance(text, str) or not isinstance(exit_code, int) or not isinstance(status, str):
                         raise WorkerError("worker sent invalid result")
-                    return AgyResult(text, exit_code, "", status)
+                    reason = event.get("reason")
+                    safe_reason = (
+                        reason if isinstance(reason, str) and reason in SAFE_FAILURE_REASONS
+                        else "agy execution failed"
+                    ) if exit_code != 0 else ""
+                    return AgyResult(text, exit_code, safe_reason, status)
                 if kind == "error":
                     raise WorkerError("worker rejected the request")
                 raise WorkerError("worker sent an unknown event")

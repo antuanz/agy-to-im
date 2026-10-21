@@ -13,6 +13,7 @@ from typing import Any
 
 from src.access import AccessPolicyError, load_access_policy
 from src.agy_runner import AgyResult, _child_environment, run_agy
+from src.diagnostics import safe_failure_reason
 from src.models import (
     MODEL_CACHE_TTL_S,
     MODEL_DISCOVERY_TIMEOUT_S,
@@ -161,6 +162,7 @@ async def _run_request(request: dict[str, Any], writer: asyncio.StreamWriter) ->
     await _send(writer, {
         "type": "result", "text": result.text, "exit_code": result.exit_code,
         "status": result.status,
+        "reason": safe_failure_reason(result) if result.exit_code != 0 else "",
     })
 
 
