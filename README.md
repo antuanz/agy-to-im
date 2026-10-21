@@ -1,7 +1,7 @@
 # 🤖 antigravity-telegram-bridge
 
 [![Python 3.11+](https://img.shields.io/badge/python-3.11+-blue.svg)](https://www.python.org/downloads/)
-[![Tests](https://img.shields.io/badge/tests-112%20passed-brightgreen.svg)](./tests)
+[![Tests](https://img.shields.io/badge/tests-passing-brightgreen.svg)](./tests)
 [![License: MIT](https://img.shields.io/badge/license-MIT-yellow.svg)](./LICENSE)
 [![systemd](https://img.shields.io/badge/supervisor-systemd--user-lightgrey.svg)](https://systemd.io/)
 [![CLI](https://img.shields.io/badge/backend-Antigravity%20%28agy%29-ff69b4.svg)](https://antigravity.google)
@@ -27,6 +27,9 @@ A Telegram bridge daemon for the Google Antigravity CLI (`agy`), allowing persis
 | Telegram ↔ `agy` messaging | ✅ |
 | Per-chat project isolation (`--new-project` / `--continue`) | ✅ |
 | Inline keyboard control panel (`/settings`, `/model`, `/mode`) | ✅ |
+| Dynamic model discovery from `agy models` with stale-selection protection | ✅ |
+| Safe rich Markdown replies with plain-text fallback | ✅ |
+| Live private-chat response drafts from `agy` stream JSON | ✅ |
 | Photo + document upload support with configurable safety routing | ✅ |
 | Configurable file type allowlist (pass/warn/hold/block per category) | ✅ |
 | Per-user rate limiting with sliding window | ✅ |
@@ -86,6 +89,7 @@ For the full step-by-step guide see `docs/deployment.md`. Day-to-day operations 
 * `/help` - Usage help
 * `/status` / `/info` - Session summary
 * `/settings` - Inline control panel (model, mode, reset)
+* `/model [slug]` - Select a currently available model or use the `agy` default
 * `/reset` - Start a fresh `agy` project for this chat
 * `/image on|off` - Toggle photo processing
 * `/files` - List inbox files
@@ -104,9 +108,9 @@ flowchart LR
 
     User -->|message| TG
     TG -->|long-poll / webhook| Bridge
-    Bridge -->|agy -p prompt --continue/--new-project| Agy
-    Agy -->|plain text reply| Bridge
-    Bridge -->|sendMessage| TG
+    Bridge -->|stream-json user event| Agy
+    Agy -->|agent response deltas| Bridge
+    Bridge -->|rich draft + final rich message| TG
     TG -->|reply| User
     Bridge <-->|read/write| State
     Bridge -->|/health /metrics| Health

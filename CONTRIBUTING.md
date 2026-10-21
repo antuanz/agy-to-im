@@ -20,8 +20,11 @@ Patches and pull requests are welcome.
    |---|---|
    | `config.py` | Parse and validate `config.json`. |
    | `state.py` | Atomic JSON state. |
-   | `telegram.py` | Telegram update parsing, authorization, chunking, async HTTP client. |
-   | `agy_runner.py` | Spawn `agy` and capture its plain-text output. |
+   | `telegram.py` | Telegram update parsing, authorization, and async HTTP client. |
+   | `formatting.py` | Safe Markdown rendering and rich-message chunking. |
+   | `models.py` | Discover and cache model slugs from `agy models`. |
+   | `processes.py` | Cross-platform subprocess-tree cleanup. |
+   | `agy_runner.py` | Stream events to and from an asynchronous `agy` process. |
    | `daemon.py` | Orchestrate the long-poll loop. |
    | `control.py` | Plugin-tool entry point (start/stop/status/logs/setup). |
 
@@ -34,7 +37,7 @@ Patches and pull requests are welcome.
 ## What's in scope for v0.x
 
 - Telegram integration (the only IM channel).
-- The `agy` subprocess wrapper and plain-text capture.
+- The `agy` subprocess wrapper and agent-response streaming.
 - Operator-facing affordances (config, state, control tool, install script, systemd unit).
 - Documentation in `docs/` and the top-level `README.md`.
 
@@ -42,7 +45,6 @@ Patches and pull requests are welcome.
 
 - Other IM channels (Discord, Slack, Feishu, QQ). They would belong in a sibling project, not in this codebase.
 - Non-text input (images, audio, files).
-- Token-by-token streaming (`agy` print mode emits plain text per turn).
 - Any UI for surfacing internal tool calls (the CLI does not expose them).
 
 If you have a use case that needs any of the above, please open an issue first to discuss before submitting code.

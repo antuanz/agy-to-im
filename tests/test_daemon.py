@@ -11,7 +11,8 @@ import pytest
 from src.agy_runner import AgyResult
 from src.config import AgyConfig, Config, TelegramConfig
 from src.daemon import DaemonInfo, run
-from src.state import load_state
+from src.models import ModelSnapshot
+from src.state import ChatState, State, load_state, save_state
 
 
 pytestmark = pytest.mark.asyncio
@@ -37,6 +38,15 @@ class _FakeTelegram:
 
     async def send_message(self, chat_id: int, text: str, *, keyboard: Any | None = None) -> int | None:
         self.sent_messages.append((chat_id, text))
+        return None
+
+    async def send_rich_message(self, chat_id: int, markdown: str) -> int | None:
+        self.sent_messages.append((chat_id, markdown))
+        return None
+
+    async def send_rich_message_draft(
+        self, chat_id: int, draft_id: int, markdown: str
+    ) -> None:
         return None
 
     async def edit_message_text(self, chat_id: int, message_id: int, text: str, *, keyboard: Any | None = None) -> None:
@@ -254,3 +264,47 @@ async def test_run_logs_one_line_per_turn(
     assert "exit=0" in msg
     assert "ms=" in msg
     assert "reply_len=" in msg
+
+
+async def test_stale_saved_model_blocks_turn_without_fallback(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    state_path = tmp_path / "state.json"
+    chats_root = tmp_path / "chats"
+    chat_dir = chats_root / "10"
+    save_state(
+        state_path,
+        State(chats={10: ChatState(chat_dir=str(chat_dir), model="retired-model")}),
+    )
+    calls = 0
+
+    async def should_not_run(*args: Any, **kwargs: Any) -> tuple[str, int]:
+        nonlocal calls
+        calls += 1
+        return "wrong model", 0
+
+    class _Catalog:
+        def __init__(self, _: str) -> None:
+            pass
+
+        async def get(self) -> ModelSnapshot:
+            return ModelSnapshot(("current-model",))
+
+    monkeypatch.setattr("src.daemon.execute_agy", should_not_run)
+    monkeypatch.setattr("src.daemon.ModelCatalog", _Catalog)
+    tg = _FakeTelegram(
+        updates_to_serve=[[_msg("hello", update_id=600)]],
+        sent_messages=[],
+        chat_actions=[],
+    )
+    stop = asyncio.Event()
+    asyncio.get_running_loop().call_later(0.2, stop.set)
+    await run(
+        cfg=_cfg(), state_path=state_path, chats_root=chats_root, tg=tg,
+        agy_path="agy", info=DaemonInfo("@bot", 0.0, "1.0"), stop_event=stop,
+    )
+    assert calls == 0
+    assert len(tg.sent_messages) == 1
+    assert "no longer available" in tg.sent_messages[0][1]
+    persisted = load_state(state_path, chats_root)
+    assert persisted.chats[10].model == "retired-model"

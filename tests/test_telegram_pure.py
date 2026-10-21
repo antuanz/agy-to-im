@@ -25,7 +25,8 @@ def _msg(text: str = "hi", user_id: int = 99999999, chat_id: int = 99999999) -> 
 def test_parse_update_extracts_text() -> None:
     msg = parse_update(_msg(text="hello kimi"))
     assert msg == InboundMessage(
-        update_id=100, chat_id=99999999, user_id=99999999, text="hello kimi"
+        update_id=100, chat_id=99999999, user_id=99999999, text="hello kimi",
+        chat_type="private",
     )
 
 

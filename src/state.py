@@ -29,7 +29,8 @@ _ALLOWED_MODES = frozenset({"", "code", "plan"})
 class ChatState:
     chat_dir: str  # absolute path; verified-on-load to be under chats_root
     has_session: bool = False  # True after first successful agy turn
-    model: str = ""  # "" → use cfg.agy.model
+    # None inherits config, "" explicitly asks agy to select its own default.
+    model: str | None = None
     mode: str = ""  # "" → use cfg.agy.mode; values: "code" | "plan"
     photo_enabled: bool = True  # toggle for photo processing
     turn_count: int = 0  # successful turns served on this chat
@@ -45,10 +46,14 @@ def is_valid_model(name: str) -> bool:
     return bool(name) and bool(_MODEL_RE.match(name))
 
 
-def _safe_model(raw: object) -> str:
-    if not isinstance(raw, str) or not raw:
-        return ""
-    return raw if _MODEL_RE.match(raw) else ""
+def _safe_model(raw: object, *, legacy: bool) -> str | None:
+    if raw is None:
+        return None
+    if not isinstance(raw, str):
+        return None
+    if not raw:
+        return None if legacy else ""
+    return raw if _MODEL_RE.match(raw) else None
 
 
 def _safe_mode(raw: object) -> str:
@@ -69,7 +74,7 @@ def _safe_bool(raw: object) -> bool:
     return True
 
 
-def _safe_chat_state(chats_root: Path, raw: dict) -> ChatState | None:
+def _safe_chat_state(chats_root: Path, raw: dict, *, legacy: bool) -> ChatState | None:
     chat_dir = raw.get("chat_dir")
     if not isinstance(chat_dir, str):
         return None
@@ -83,7 +88,7 @@ def _safe_chat_state(chats_root: Path, raw: dict) -> ChatState | None:
     return ChatState(
         chat_dir=str(p),
         has_session=bool(raw.get("has_session", False)),
-        model=_safe_model(raw.get("model", "")),
+        model=_safe_model(raw.get("model"), legacy=legacy),
         mode=_safe_mode(raw.get("mode", "")),
         photo_enabled=_safe_bool(raw.get("photo_enabled", True)),
         turn_count=_safe_turn_count(raw.get("turn_count", 0)),
@@ -98,6 +103,7 @@ def load_state(path: Path, chats_root: Path) -> State:
     except json.JSONDecodeError:
         return State()
     chats_raw = raw.get("chats") or {}
+    legacy = raw.get("state_version") != 2
     chats: dict[int, ChatState] = {}
     for k, v in chats_raw.items():
         try:
@@ -106,7 +112,7 @@ def load_state(path: Path, chats_root: Path) -> State:
             continue
         if not isinstance(v, dict):
             continue
-        cs = _safe_chat_state(chats_root, v)
+        cs = _safe_chat_state(chats_root, v, legacy=legacy)
         if cs is not None:
             chats[chat_id] = cs
     return State(
@@ -119,6 +125,7 @@ def save_state(path: Path, state: State) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
     tmp = path.with_suffix(path.suffix + ".tmp")
     payload = {
+        "state_version": 2,
         "last_update_id": state.last_update_id,
         "chats": {str(k): asdict(v) for k, v in state.chats.items()},
     }

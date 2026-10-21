@@ -56,14 +56,26 @@ async def test_thinking_not_available() -> None:
 
 
 async def test_model_picker() -> None:
-    reply = await handle_text_command(_FakeMsg("/model"), _state(), _cfg(model="gemini-2.5-pro"))
+    reply = await handle_text_command(
+        _FakeMsg("/model"), _state(), _cfg(model="gemini-2.5-pro"),
+        ("gemini-2.5-pro", "gemini-4-argon-high"),
+    )
     assert reply is not None
     assert reply.keyboard is not None
+    labels = [row[0]["text"] for row in reply.keyboard]
+    assert any("gemini-4-argon-high" in label for label in labels)
+    assert any("Use agy default" in label for label in labels)
+    assert all(
+        len(str(button["callback_data"]).encode("utf-8")) <= 64
+        for row in reply.keyboard for button in row
+    )
 
 
 async def test_model_set() -> None:
     cs = _state()
-    reply = await handle_text_command(_FakeMsg("/model gemini-2.5-pro"), cs, _cfg())
+    reply = await handle_text_command(
+        _FakeMsg("/model gemini-2.5-pro"), cs, _cfg(), ("gemini-2.5-pro",)
+    )
     assert reply is not None
     assert cs.model == "gemini-2.5-pro"
 
@@ -90,9 +102,68 @@ async def test_callback_nav_settings() -> None:
 async def test_callback_model_choice() -> None:
     cs = _state()
     cq = CallbackQuery(update_id=1, callback_query_id="q", chat_id=42, user_id=42, message_id=1, data="m:gemini-2.5-pro")
-    reply = handle_callback(cq, cs, _cfg())
+    reply = handle_callback(cq, cs, _cfg(), ("gemini-2.5-pro",))
     assert cs.model == "gemini-2.5-pro"
     assert "gemini-2.5-pro" in reply.toast
+
+
+async def test_typed_unknown_model_is_rejected_without_changing_selection() -> None:
+    cs = _state()
+    cs.model = "model-a"
+    reply = await handle_text_command(
+        _FakeMsg("/model model-b"), cs, _cfg(), ("model-a",)
+    )
+    assert reply is not None
+    assert "unsupported" in reply.text.lower()
+    assert cs.model == "model-a"
+
+
+async def test_stale_saved_selection_is_shown_not_replaced() -> None:
+    cs = _state()
+    cs.model = "retired-model"
+    reply = await handle_text_command(
+        _FakeMsg("/model"), cs, _cfg(), ("current-model",)
+    )
+    assert reply is not None
+    assert "no longer available" in reply.text
+    assert cs.model == "retired-model"
+
+
+async def test_default_button_explicitly_selects_agy_default() -> None:
+    cs = _state()
+    cq = CallbackQuery(
+        update_id=1, callback_query_id="q", chat_id=42, user_id=42,
+        message_id=1, data="m:_DEFAULT",
+    )
+    reply = handle_callback(cq, cs, _cfg(model="configured-model"), ())
+    assert cs.model == ""
+    assert "agy default" in reply.toast.lower()
+
+
+async def test_model_discovery_failure_blocks_typed_selection() -> None:
+    cs = _state()
+    reply = await handle_text_command(
+        _FakeMsg("/model model-a"), cs, _cfg(), (), "agy models timed out"
+    )
+    assert reply is not None
+    assert "cannot validate" in reply.text.lower()
+    assert cs.model is None
+
+
+async def test_dynamic_button_is_revalidated_if_catalog_changes() -> None:
+    cs = _state()
+    picker = await handle_text_command(
+        _FakeMsg("/model"), cs, _cfg(), ("model-a",)
+    )
+    assert picker is not None and picker.keyboard is not None
+    data = str(picker.keyboard[0][0]["callback_data"])
+    cq = CallbackQuery(
+        update_id=1, callback_query_id="q", chat_id=42, user_id=42,
+        message_id=1, data=data,
+    )
+    reply = handle_callback(cq, cs, _cfg(), ("model-b",))
+    assert cs.model is None
+    assert reply.toast == "Unknown choice"
 
 
 async def test_callback_reset() -> None:

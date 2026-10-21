@@ -10,7 +10,7 @@ This bridge connects the [Antigravity CLI](https://antigravity.google) (`agy`) t
 
 Design constraints:
 
-1. **Standalone codebase** — no third-party SDKs beyond `httpx`, single Python runtime.
+1. **Standalone codebase** — a small Python dependency set, with no third-party LLM SDK.
 2. **Lives within the Antigravity/Google plugin directory** at `~/.gemini/extensions/`.
 3. **Installed as an `agy` plugin** under `~/.gemini/extensions/antigravity-telegram-bridge/` so it shows up in `agy`'s plugin tooling, while the actual daemon runs as a sibling `systemd --user` service.
 
@@ -35,15 +35,16 @@ A separate long-running Python process, run as `python -m src.daemon`, supervise
 1. Telegram `getUpdates` long-poll (timeout=30s) returns updates. In webhook mode, callbacks are received on a local HTTP server and drained into the same loop.
 2. Filter: ignore non-message/non-callback updates; reject senders whose `from.id` is not in `telegram.allowed_user_ids` (and chats not in `telegram.allowed_chat_ids` when that list is non-empty).
 3. Map `chat_id → chat_dir` via persisted state; create the directory if first time.
-4. `sendChatAction: typing` to the chat.
+4. Start a rich live draft in private chats, or use `sendChatAction: typing` elsewhere.
 5. Build `agy` argv:
    ```
-   agy -p "<prompt>" --continue|--new-project [--model <model>]
+   agy --input-format stream-json --output-format stream-json
+       --continue|--new-project [--model <model>]
        --dangerously-skip-permissions [--sandbox]
        --print-timeout 15m
    ```
-   and spawn it with `cwd=chat_dir`.
-6. Capture plain-text stdout. On exit, send the reply to Telegram (chunked if >4096 chars).
+   and spawn it asynchronously with `cwd=chat_dir`; send the prompt as a JSON user event on stdin.
+6. Accumulate only agent-response deltas. Publish throttled rich drafts, then a permanent safe rich-Markdown reply (falling back to plain text if rejected).
 7. Persist `last_update_id` and `chats` map atomically.
 
 **Errors:** non-zero exit from `agy` → reply `⚠️ agy error (exit <code>)` to the chat and log stderr. Network errors talking to Telegram → backoff, never crash the loop.
@@ -65,13 +66,16 @@ A separate long-running Python process, run as `python -m src.daemon`, supervise
 ├── docs/                                            # design, deployment, operations, security
 └── src/
     ├── __init__.py
-    ├── agy_runner.py                                # build argv + spawn agy, capture plain text
+    ├── agy_runner.py                                # async agy stream-JSON protocol
     ├── commands.py                                  # slash commands + inline-keyboard callbacks
     ├── control.py                                   # plugin-tool entry: action=start|stop|status|logs|setup
     ├── daemon.py                                    # main poll/webhook loop + orchestration
     ├── events.py                                    # (reserved) event buffering helpers
     ├── health.py                                    # /health + /metrics HTTP server
+    ├── formatting.py                                # safe Markdown + rich chunking
     ├── media.py                                     # photo/document download + inbox
+    ├── models.py                                    # dynamic agy model catalog
+    ├── processes.py                                 # subprocess-tree cleanup
     ├── queue.py                                     # FIFO multi-user turn queue
     ├── state.py                                     # ~/.antigravity/bridge/state.json reader/writer
     ├── telegram.py                                  # Telegram HTTP client + pure helpers
@@ -160,6 +164,7 @@ This is Option B from the adoption plan (cwd auto-resolution). It keeps the impl
 
 - Python 3.11+.
 - **httpx** for Telegram HTTP API.
+- **markdown-it-py** for CommonMark parsing with raw HTML and media disabled.
 - `uv` for venv creation in `install.sh`.
 
 No Node, no npm packages, no third-party LLM SDKs.

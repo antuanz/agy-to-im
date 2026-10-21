@@ -7,15 +7,21 @@ import os
 import signal
 import subprocess
 import time
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from pathlib import Path
 from typing import Any, Awaitable, Callable, Protocol
 
 from src.agy_runner import AgyResult
-from src.commands import BridgeReply, handle_callback, handle_text_command
+from src.commands import (
+    BridgeReply,
+    effective_model_value,
+    handle_callback,
+    handle_text_command,
+)
 from src.config import Config, load_config
 from src.health import memory_healthy, record_error, record_turn, start_server
 from src.media import build_media_prompt, clean_inbox
+from src.models import ModelCatalog, ModelSnapshot
 from src.okf_memory import attach_memory
 from src.queue import TurnQueue
 from src.state import ChatState, State, load_state, save_state
@@ -41,6 +47,10 @@ class _TelegramLike(Protocol):
     async def send_message(
         self, chat_id: int, text: str, *, keyboard: Any | None = None
     ) -> int | None: ...
+    async def send_rich_message(self, chat_id: int, markdown: str) -> int | None: ...
+    async def send_rich_message_draft(
+        self, chat_id: int, draft_id: int, markdown: str
+    ) -> None: ...
     async def edit_message_text(
         self, chat_id: int, message_id: int, text: str, *, keyboard: Any | None = None
     ) -> None: ...
@@ -105,16 +115,36 @@ def _format_timeout_reply() -> str:
 
 async def _do_turn(
     msg: InboundMessage, tg: _TelegramLike, cs: ChatState,
-    cfg: Config, agy_path: str,
+    cfg: Config, agy_path: str, catalog: ModelCatalog,
 ) -> None:
     prompt = await build_media_prompt(msg, tg, cs, cfg)
     if prompt is None:
         return
+    selected_model = effective_model_value(cs, cfg)
+    if selected_model:
+        snapshot = await catalog.get()
+        if snapshot.error:
+            await tg.send_message(
+                msg.chat_id,
+                f"⚠️ Cannot validate saved model {selected_model!r}: "
+                f"{snapshot.error}. No agy turn was started.",
+            )
+            return
+        if selected_model not in snapshot.models:
+            await tg.send_message(
+                msg.chat_id,
+                f"⚠️ Saved model {selected_model!r} is no longer available. "
+                "Use /model to choose another model or Use agy default.",
+            )
+            return
     try:
         await tg.send_chat_action(msg.chat_id, "typing")
     except Exception:
         pass
-    text, code = await execute_agy(tg, msg.chat_id, msg, cs, cfg, agy_path)
+    execution_msg = replace(msg, text=prompt)
+    text, code = await execute_agy(
+        tg, msg.chat_id, execution_msg, cs, cfg, agy_path
+    )
     if code == 124:
         record_error()
         reply = _format_timeout_reply()
@@ -134,7 +164,10 @@ async def _do_turn(
     except Exception:
         pass
     try:
-        await tg.send_message(msg.chat_id, reply)
+        if code == 0:
+            await tg.send_rich_message(msg.chat_id, reply)
+        else:
+            await tg.send_message(msg.chat_id, reply)
     except Exception as err:
         LOG.error("sendMessage failed chat=%s: %s", msg.chat_id, err)
 
@@ -142,7 +175,7 @@ async def _do_turn(
 async def _process_text(
     msg: InboundMessage, tg: _TelegramLike, state: State,
     state_path: Path, chats_root: Path, cfg: Config,
-    agy_path: str, info: DaemonInfo,
+    agy_path: str, info: DaemonInfo, catalog: ModelCatalog,
 ) -> None:
     if not is_authorized(msg, cfg.telegram):
         LOG.info("drop unauth user=%s", msg.user_id)
@@ -151,7 +184,13 @@ async def _process_text(
     cs = _ensure_chat_state(state, msg.chat_id, chats_root)
     save_state(state_path, state)
 
-    reply = await handle_text_command(msg, cs, cfg)
+    snapshot = ModelSnapshot(())
+    command = msg.text.strip().split(maxsplit=1)
+    if command and command[0].lower() == "/model":
+        snapshot = await catalog.get()
+    reply = await handle_text_command(
+        msg, cs, cfg, snapshot.models, snapshot.error
+    )
     if reply is not None:
         save_state(state_path, state)
         try:
@@ -165,7 +204,7 @@ async def _process_text(
         await tg.send_message(msg.chat_id, status)
         return
 
-    await _do_turn(msg, tg, cs, cfg, agy_path)
+    await _do_turn(msg, tg, cs, cfg, agy_path, catalog)
     _QUEUE.complete()
 
     while True:
@@ -174,7 +213,7 @@ async def _process_text(
             break
         nxt_msg, nxt_fut = next_item
         nxt_cs = _ensure_chat_state(state, nxt_msg.chat_id, chats_root)
-        await _do_turn(nxt_msg, tg, nxt_cs, cfg, agy_path)
+        await _do_turn(nxt_msg, tg, nxt_cs, cfg, agy_path, catalog)
         _QUEUE.complete()
         nxt_fut.set_result(None)
 
@@ -184,6 +223,7 @@ async def _process_text(
 async def _process_callback(
     cq: CallbackQuery, tg: _TelegramLike, state: State,
     state_path: Path, chats_root: Path, cfg: Config, info: DaemonInfo,
+    catalog: ModelCatalog,
 ) -> None:
     if not is_authorized(
         InboundMessage(update_id=cq.update_id, chat_id=cq.chat_id,
@@ -195,7 +235,10 @@ async def _process_callback(
         return
 
     cs = _ensure_chat_state(state, cq.chat_id, chats_root)
-    reply = handle_callback(cq, cs, cfg)
+    snapshot = ModelSnapshot(())
+    if cq.data == "nav:model" or cq.data.startswith("m:"):
+        snapshot = await catalog.get()
+    reply = handle_callback(cq, cs, cfg, snapshot.models, snapshot.error)
     save_state(state_path, state)
 
     try:
@@ -233,11 +276,15 @@ async def run(
     tg: _TelegramLike, agy_path: str, info: DaemonInfo,
     stop_event: asyncio.Event,
 ) -> None:
+    _QUEUE.active = False
+    _QUEUE.pending.clear()
+    _QUEUE._limits.clear()
     _QUEUE.owner_chat_id = cfg.telegram.allowed_user_ids[0] if cfg.telegram.allowed_user_ids else 0
     _QUEUE.max_per_user = cfg.safety.queue.max_per_user
     _QUEUE.cooldown_seconds = cfg.safety.queue.cooldown_seconds
     chats_root.mkdir(parents=True, exist_ok=True)
     state = load_state(state_path, chats_root)
+    catalog = ModelCatalog(agy_path)
     tick = 0
     async with tg:
         while not stop_event.is_set():
@@ -264,14 +311,14 @@ async def run(
                         continue
                     await _process_text(
                         msg, tg, state, state_path, chats_root,
-                        cfg, agy_path, info,
+                        cfg, agy_path, info, catalog,
                     )
                     continue
 
                 cq = parse_callback_for_daemon(upd)
                 if cq is not None:
                     await _process_callback(
-                        cq, tg, state, state_path, chats_root, cfg, info,
+                        cq, tg, state, state_path, chats_root, cfg, info, catalog,
                     )
                     continue
 

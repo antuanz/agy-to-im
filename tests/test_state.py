@@ -1,6 +1,7 @@
 """Tests for src.state — atomic JSON state file."""
 from __future__ import annotations
 
+import json
 from pathlib import Path
 
 from src.state import ChatState, State, load_state, save_state
@@ -61,13 +62,11 @@ def test_chat_keys_round_trip_as_int(tmp_path: Path) -> None:
 def test_load_state_drops_malformed_chat_dirs(tmp_path: Path) -> None:
     """A tampered state.json with chat_dir outside chats_root should be dropped."""
     p = tmp_path / "state.json"
-    p.write_text(
-        '{"last_update_id": 5, "chats": {'
-        '"123": {"chat_dir": "/tmp/evil", "has_session": false},'
-        '"456": {"chat_dir": "not-absolute", "has_session": false},'
-        '"789": {"chat_dir": "' + str(tmp_path / "chats" / "789") + '", "has_session": true}'
-        '}}'
-    )
+    p.write_text(json.dumps({"last_update_id": 5, "chats": {
+        "123": {"chat_dir": "/tmp/evil", "has_session": False},
+        "456": {"chat_dir": "not-absolute", "has_session": False},
+        "789": {"chat_dir": str(tmp_path / "chats" / "789"), "has_session": True},
+    }}))
     state = load_state(p, tmp_path / "chats")
     assert state.last_update_id == 5
     assert state.chats.keys() == {789}
@@ -77,13 +76,11 @@ def test_load_state_drops_invalid_model_or_mode(tmp_path: Path) -> None:
     chat_dir = str(tmp_path / "chats" / "123")
     (tmp_path / "chats" / "123").mkdir(parents=True)
     p = tmp_path / "state.json"
-    p.write_text(
-        '{"last_update_id": 1, "chats": {'
-        '"123": {"chat_dir": "' + chat_dir + '", "model": "--evil", "mode": "bad"}'
-        '}}'
-    )
+    p.write_text(json.dumps({"last_update_id": 1, "chats": {
+        "123": {"chat_dir": chat_dir, "model": "--evil", "mode": "bad"},
+    }}))
     state = load_state(p, tmp_path / "chats")
-    assert state.chats[123].model == ""
+    assert state.chats[123].model is None
     assert state.chats[123].mode == ""
 
 
@@ -91,10 +88,26 @@ def test_load_state_keeps_photo_enabled(tmp_path: Path) -> None:
     chat_dir = str(tmp_path / "chats" / "123")
     (tmp_path / "chats" / "123").mkdir(parents=True)
     p = tmp_path / "state.json"
-    p.write_text(
-        '{"last_update_id": 1, "chats": {'
-        '"123": {"chat_dir": "' + chat_dir + '", "photo_enabled": false}'
-        '}}'
-    )
+    p.write_text(json.dumps({"last_update_id": 1, "chats": {
+        "123": {"chat_dir": chat_dir, "photo_enabled": False},
+    }}))
     state = load_state(p, tmp_path / "chats")
     assert state.chats[123].photo_enabled is False
+
+
+def test_explicit_empty_model_round_trips_as_agy_default(tmp_path: Path) -> None:
+    path = tmp_path / "state.json"
+    chat_dir = str(tmp_path / "chats" / "123")
+    save_state(path, State(chats={123: ChatState(chat_dir=chat_dir, model="")}))
+    loaded = load_state(path, tmp_path / "chats")
+    assert loaded.chats[123].model == ""
+
+
+def test_legacy_empty_model_migrates_to_inherit_config(tmp_path: Path) -> None:
+    path = tmp_path / "state.json"
+    chat_dir = str(tmp_path / "chats" / "123")
+    path.write_text(json.dumps({"chats": {"123": {
+        "chat_dir": chat_dir, "model": "",
+    }}}))
+    loaded = load_state(path, tmp_path / "chats")
+    assert loaded.chats[123].model is None

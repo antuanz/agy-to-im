@@ -1,173 +1,205 @@
-"""Tests for src.agy_runner — subprocess spawn and argv construction."""
+"""Tests for the asynchronous agy stream-JSON runner."""
 from __future__ import annotations
 
+import asyncio
+import json
+import os
 import stat
+import sys
 import textwrap
 from pathlib import Path
 
 import pytest
 
-from src.agy_runner import AgyResult, run_agy
+from src.agy_runner import (
+    AgyResult,
+    _build_args,
+    _process_group_options,
+    _terminate_process_group,
+    run_agy,
+)
 
 
-@pytest.fixture
-def fake_agy(tmp_path: Path) -> Path:
-    """Create an executable shell stub that echoes a plain-text reply."""
-    script = tmp_path / "agy"
-    script.write_text(
+def _fake_agy(tmp_path: Path) -> Path:
+    implementation = tmp_path / "fake_agy.py"
+    implementation.write_text(
         textwrap.dedent(
             """\
-            #!/bin/sh
-            cat > /dev/null
-            echo 'fake reply'
+            import json, os, pathlib, subprocess, sys, time
+
+            pathlib.Path(os.environ["ARGV_FILE"]).write_text(json.dumps(sys.argv[1:]))
+            line = sys.stdin.readline()
+            pathlib.Path(os.environ["INPUT_FILE"]).write_text(line)
+            case = os.environ.get("FAKE_AGY_CASE", "success")
+            if case == "timeout":
+                marker = os.environ["CHILD_MARKER"]
+                subprocess.Popen([sys.executable, "-c", "import pathlib,time,sys; time.sleep(1); pathlib.Path(sys.argv[1]).write_text('alive')", marker])
+                time.sleep(30)
+            elif case == "non_success":
+                print(json.dumps({"event":"step_update","step_update":{"step_type":"agent_response","text_delta":"partial"}}), flush=True)
+                print(json.dumps({"event":"result","result":{"status":"ERROR","error":"failed"}}), flush=True)
+            elif case == "no_result":
+                print("not json", flush=True)
+            else:
+                sys.stderr.write("private diagnostic\\n")
+                sys.stdout.write("malformed\\n")
+                event = json.dumps({"event":"step_update","step_update":{"step_type":"tool","tool_info":{"output":"SECRET TOOL"}}}) + "\\n"
+                sys.stdout.write(event)
+                delta = json.dumps({"event":"step_update","step_update":{"step_type":"agent_response","text_delta":"hello "}}) + "\\n"
+                middle = len(delta) // 2
+                sys.stdout.write(delta[:middle]); sys.stdout.flush(); time.sleep(0.02)
+                sys.stdout.write(delta[middle:]); sys.stdout.flush()
+                print(json.dumps({"event":"step_update","step_update":{"step_type":"agent_response","text_delta":"world"}}), flush=True)
+                print(json.dumps({"event":"result","result":{"status":"SUCCESS","response":"must not be used"}}), flush=True)
             """
         )
     )
-    script.chmod(script.stat().st_mode | stat.S_IXUSR | stat.S_IXGRP | stat.S_IXOTH)
-    return script
+    if os.name == "nt":
+        wrapper = tmp_path / "agy.cmd"
+        wrapper.write_text(f'@"{sys.executable}" "{implementation}" %*\n')
+    else:
+        wrapper = tmp_path / "agy"
+        wrapper.write_text(f'#!/bin/sh\nexec "{sys.executable}" "{implementation}" "$@"\n')
+        wrapper.chmod(wrapper.stat().st_mode | stat.S_IXUSR)
+    return wrapper
 
 
-async def test_run_agy_returns_stdout_text(fake_agy: Path, tmp_path: Path) -> None:
+def _env_for_fake(monkeypatch: pytest.MonkeyPatch, tmp_path: Path, case: str) -> None:
+    monkeypatch.setenv("ARGV_FILE", str(tmp_path / "argv.json"))
+    monkeypatch.setenv("INPUT_FILE", str(tmp_path / "input.jsonl"))
+    monkeypatch.setenv("FAKE_AGY_CASE", case)
+    monkeypatch.setenv("CHILD_MARKER", str(tmp_path / "child-alive"))
+
+
+async def test_streams_only_agent_text_and_sends_user_event(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    agy = _fake_agy(tmp_path)
+    _env_for_fake(monkeypatch, tmp_path, "success")
+    updates: list[str] = []
+
+    async def on_output(text: str) -> None:
+        updates.append(text)
+
     result = await run_agy(
-        prompt="hello",
+        "hello input",
         chat_dir=str(tmp_path),
         has_session=False,
         model="",
         mode="code",
-        agy_path=str(fake_agy),
+        agy_path=str(agy),
+        on_output=on_output,
     )
-    assert isinstance(result, AgyResult)
+
+    assert result.text == "hello world"
     assert result.exit_code == 0
-    assert result.text.strip() == "fake reply"
+    assert result.stderr.strip() == "private diagnostic"
+    assert result.status == "SUCCESS"
+    assert updates == ["hello ", "hello world"]
+    sent = json.loads((tmp_path / "input.jsonl").read_text())
+    assert sent == {"event": "user", "message": {"content": "hello input"}}
+    assert "SECRET TOOL" not in result.text
+    assert "private diagnostic" not in result.text
 
 
-async def test_run_agy_surfaces_nonzero_exit(tmp_path: Path) -> None:
-    script = tmp_path / "agy-fail"
-    script.write_text("#!/bin/sh\necho boom 1>&2\nexit 1\n")
-    script.chmod(script.stat().st_mode | stat.S_IXUSR | stat.S_IXGRP | stat.S_IXOTH)
-    result = await run_agy(
-        prompt="x",
-        chat_dir=str(tmp_path),
-        has_session=False,
-        model="",
-        mode="code",
-        agy_path=str(script),
-    )
-    assert result.exit_code == 1
-    assert "boom" in result.stderr
-    assert result.text == ""
-
-
-async def test_run_agy_builds_argv(tmp_path: Path) -> None:
-    captured = tmp_path / "argv.txt"
-    script = tmp_path / "agy-record"
-    script.write_text(
-        textwrap.dedent(
-            f"""\
-            #!/bin/sh
-            cat > /dev/null
-            printf '%s\\n' "$@" > "{captured}"
-            echo ok
-            """
-        )
-    )
-    script.chmod(script.stat().st_mode | stat.S_IXUSR | stat.S_IXGRP | stat.S_IXOTH)
-
-    workdir = tmp_path / "work"
-    workdir.mkdir()
+async def test_builds_stream_argv_and_omits_empty_model(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    agy = _fake_agy(tmp_path)
+    _env_for_fake(monkeypatch, tmp_path, "success")
     await run_agy(
-        prompt="hi",
-        chat_dir=str(workdir),
+        "prompt is not argv",
+        chat_dir=str(tmp_path),
         has_session=True,
-        model="gemini-2.5-pro",
+        model="",
         mode="plan",
-        agy_path=str(script),
+        agy_path=str(agy),
     )
-    args = captured.read_text().splitlines()
-    assert "-p" in args and "hi" in args
+    args = json.loads((tmp_path / "argv.json").read_text())
+    assert args[:4] == [
+        "--input-format", "stream-json", "--output-format", "stream-json"
+    ]
     assert "--continue" in args
-    assert "--model" in args and "gemini-2.5-pro" in args
-    assert "--dangerously-skip-permissions" in args
     assert "--sandbox" in args
-    assert "--print-timeout" in args
+    assert "--model" not in args
+    assert "prompt is not argv" not in args
 
 
-async def test_run_agy_uses_new_project_for_fresh_session(tmp_path: Path) -> None:
-    captured = tmp_path / "argv.txt"
-    script = tmp_path / "agy-record"
-    script.write_text(
-        textwrap.dedent(
-            f"""\
-            #!/bin/sh
-            cat > /dev/null
-            printf '%s\\n' "$@" > "{captured}"
-            echo ok
-            """
-        )
-    )
-    script.chmod(script.stat().st_mode | stat.S_IXUSR | stat.S_IXGRP | stat.S_IXOTH)
-
-    workdir = tmp_path / "work"
-    workdir.mkdir()
-    await run_agy(
-        prompt="hi",
-        chat_dir=str(workdir),
-        has_session=False,
-        model="",
-        mode="code",
-        agy_path=str(script),
-    )
-    args = captured.read_text().splitlines()
-    assert "--new-project" in args
-    assert "--continue" not in args
-
-
-async def test_run_agy_returns_timeout_result(tmp_path: Path) -> None:
-    script = tmp_path / "agy-hang"
-    script.write_text("#!/bin/sh\ncat > /dev/null\nsleep 5\n")
-    script.chmod(script.stat().st_mode | stat.S_IXUSR | stat.S_IXGRP | stat.S_IXOTH)
-
-    result = await run_agy(
-        prompt="x",
-        chat_dir=str(tmp_path),
-        has_session=False,
-        model="",
-        mode="code",
-        agy_path=str(script),
-        timeout=0.3,
-    )
-    assert result.exit_code == 124
-    assert "timed out" in result.stderr
-    assert result.text == ""
-
-
-async def test_run_agy_no_timeout_by_default(fake_agy: Path, tmp_path: Path) -> None:
-    result = await run_agy(
-        prompt="x",
-        chat_dir=str(tmp_path),
-        has_session=False,
-        model="",
-        mode="code",
-        agy_path=str(fake_agy),
-    )
-    assert result.exit_code == 0
-    assert result.text.strip() == "fake reply"
-
-
-def test_build_args_plan_sandbox() -> None:
-    from src.agy_runner import _build_args
-
+def test_build_args_includes_exact_selected_model() -> None:
     args = _build_args(
         agy_path="/usr/bin/agy",
-        prompt="run-security-scan",
+        prompt="not-on-argv",
         has_session=False,
-        model="gemini-2.5-pro",
-        mode="plan",
+        model="gemini-4-argon-high",
+        mode="code",
         print_timeout="15m",
-        chat_dir="/home/i/chat_workspace",
     )
-
     assert args[0] == "/usr/bin/agy"
-    assert "--mode" in args and "plan" in args
-    assert "--sandbox" in args
-    assert "-p" in args and "run-security-scan" in args
+    assert args[args.index("--model") + 1] == "gemini-4-argon-high"
+    assert "--new-project" in args
+    assert "-p" not in args
+
+
+@pytest.mark.parametrize("case,status", [("non_success", "ERROR"), ("no_result", "INVALID")])
+async def test_rejects_non_success_or_missing_terminal_result(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    case: str,
+    status: str,
+) -> None:
+    agy = _fake_agy(tmp_path)
+    _env_for_fake(monkeypatch, tmp_path, case)
+    result = await run_agy(
+        "x", chat_dir=str(tmp_path), has_session=False, model="", mode="code",
+        agy_path=str(agy),
+    )
+    assert result.exit_code != 0
+    assert result.status == status
+
+
+async def test_timeout_terminates_process_tree(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    agy = _fake_agy(tmp_path)
+    _env_for_fake(monkeypatch, tmp_path, "timeout")
+    result = await run_agy(
+        "x", chat_dir=str(tmp_path), has_session=False, model="", mode="code",
+        agy_path=str(agy), timeout=0.15,
+    )
+    assert result.exit_code == 124
+    assert result.status == "TIMEOUT"
+    assert "timed out" in result.stderr
+
+
+async def test_cancellation_terminates_process_tree(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    agy = _fake_agy(tmp_path)
+    _env_for_fake(monkeypatch, tmp_path, "timeout")
+    task = asyncio.create_task(run_agy(
+        "x", chat_dir=str(tmp_path), has_session=False, model="", mode="code",
+        agy_path=str(agy),
+    ))
+    await asyncio.sleep(0.15)
+    task.cancel()
+    with pytest.raises(asyncio.CancelledError):
+        await task
+    assert task.cancelled()
+
+
+async def test_process_group_cleanup_kills_descendants(tmp_path: Path) -> None:
+    marker = tmp_path / "orphan-marker"
+    code = (
+        "import subprocess,sys,time; "
+        "subprocess.Popen([sys.executable,'-c',"
+        "\"import pathlib,sys,time; time.sleep(1); pathlib.Path(sys.argv[1]).write_text('alive')\","
+        "sys.argv[1]]); time.sleep(30)"
+    )
+    proc = await asyncio.create_subprocess_exec(
+        sys.executable, "-c", code, str(marker), **_process_group_options()
+    )
+    await asyncio.sleep(0.15)
+    await _terminate_process_group(proc)
+    assert proc.returncode is not None
+    await asyncio.sleep(1.1)
+    assert not marker.exists()

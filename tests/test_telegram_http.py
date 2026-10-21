@@ -1,6 +1,8 @@
 """Tests for the async TelegramClient HTTP wrapper."""
 from __future__ import annotations
 
+import json
+
 import pytest
 from pytest_httpx import HTTPXMock
 
@@ -71,3 +73,64 @@ async def test_send_chat_action_posts_typing(httpx_mock: HTTPXMock) -> None:
     body = req.read().decode()
     assert "typing" in body
     assert "10" in body
+
+
+async def test_send_rich_message_posts_safe_html(httpx_mock: HTTPXMock) -> None:
+    httpx_mock.add_response(
+        url="https://api.telegram.org/botTOKEN/sendRichMessage",
+        method="POST",
+        json={"ok": True, "result": {"message_id": 123}},
+    )
+    async with TelegramClient("TOKEN") as tg:
+        message_id = await tg.send_rich_message(
+            10, "# Heading\n\n![pixel](https://example.com/pixel.png) <b>raw</b>"
+        )
+    assert message_id == 123
+    payload = json.loads(httpx_mock.get_requests()[0].content)
+    rich = payload["rich_message"]
+    assert "<h1>Heading</h1>" in rich["html"]
+    assert "<img" not in rich["html"]
+    assert "pixel.png" not in rich["html"]
+    assert "&lt;b&gt;raw&lt;/b&gt;" in rich["html"]
+    assert "media" not in rich
+
+
+async def test_send_rich_message_falls_back_to_plain_text(
+    httpx_mock: HTTPXMock,
+) -> None:
+    httpx_mock.add_response(
+        url="https://api.telegram.org/botTOKEN/sendRichMessage",
+        method="POST",
+        json={"ok": False, "description": "can't parse rich message"},
+        status_code=400,
+    )
+    httpx_mock.add_response(
+        url="https://api.telegram.org/botTOKEN/sendMessage",
+        method="POST",
+        json={"ok": True, "result": {"message_id": 456}},
+    )
+    async with TelegramClient("TOKEN") as tg:
+        message_id = await tg.send_rich_message(10, "**still readable**")
+    assert message_id == 456
+    requests = httpx_mock.get_requests()
+    assert [request.url.path for request in requests] == [
+        "/botTOKEN/sendRichMessage", "/botTOKEN/sendMessage"
+    ]
+    fallback = json.loads(requests[1].content)
+    assert fallback["text"] == "**still readable**"
+
+
+async def test_send_rich_draft_uses_stable_id_without_stop_button(
+    httpx_mock: HTTPXMock,
+) -> None:
+    httpx_mock.add_response(
+        url="https://api.telegram.org/botTOKEN/sendRichMessageDraft",
+        method="POST",
+        json={"ok": True, "result": True},
+    )
+    async with TelegramClient("TOKEN") as tg:
+        await tg.send_rich_message_draft(10, 987654, "**partial**")
+    payload = json.loads(httpx_mock.get_requests()[0].content)
+    assert payload["draft_id"] == 987654
+    assert "<strong>partial</strong>" in payload["rich_message"]["html"]
+    assert "can_stop" not in payload

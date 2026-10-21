@@ -5,6 +5,7 @@ from dataclasses import dataclass
 from typing import Any
 
 from src.config import TelegramConfig
+from src.formatting import chunk_markdown, markdown_to_safe_html
 
 
 @dataclass(frozen=True)
@@ -13,6 +14,7 @@ class InboundMessage:
     chat_id: int
     user_id: int
     text: str
+    chat_type: str = ""
     photo: list[dict[str, Any]] | None = None
     document: dict[str, Any] | None = None
 
@@ -52,6 +54,7 @@ def parse_update(update: dict[str, Any]) -> InboundMessage | None:
         chat_id=cid,
         user_id=uid,
         text=text,
+        chat_type=str(chat.get("type") or ""),
         photo=list(photo) if isinstance(photo, list) else None,
         document=doc if isinstance(doc, dict) else None,
     )
@@ -189,6 +192,49 @@ class TelegramClient:
                 if isinstance(mid, int):
                     first_message_id = mid
         return first_message_id
+
+    async def send_rich_message(self, chat_id: int, markdown: str) -> int | None:
+        """Send safe rich content, falling back per chunk to plain text."""
+        assert self._client is not None
+        first_message_id: int | None = None
+        for source in chunk_markdown(markdown):
+            payload = {
+                "chat_id": chat_id,
+                "rich_message": {"html": markdown_to_safe_html(source)},
+            }
+            r = await self._client.post(f"{self._base}/sendRichMessage", json=payload)
+            data = r.json()
+            if not data.get("ok"):
+                message_id = await self.send_message(chat_id, source)
+            else:
+                result = data.get("result") or {}
+                value = result.get("message_id")
+                message_id = value if isinstance(value, int) else None
+            if first_message_id is None:
+                first_message_id = message_id
+        return first_message_id
+
+    async def send_rich_message_draft(
+        self, chat_id: int, draft_id: int, markdown: str
+    ) -> None:
+        """Update one ephemeral rich draft. Draft IDs are stable per turn."""
+        assert self._client is not None
+        chunks = chunk_markdown(markdown)
+        if not chunks:
+            return
+        payload = {
+            "chat_id": chat_id,
+            "draft_id": draft_id,
+            "rich_message": {"html": markdown_to_safe_html(chunks[0])},
+        }
+        r = await self._client.post(
+            f"{self._base}/sendRichMessageDraft", json=payload
+        )
+        data = r.json()
+        if not data.get("ok"):
+            raise RuntimeError(
+                f"sendRichMessageDraft failed: {data.get('description')}"
+            )
 
     async def edit_message_text(
         self,

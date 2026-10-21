@@ -10,21 +10,31 @@ import pytest
 from src.agy_runner import AgyResult
 from src.config import AgyConfig, Config, TelegramConfig
 from src.state import ChatState
-from src.turn import execute_agy
+from src.turn import _DraftPublisher, execute_agy
 
 
 @dataclass(frozen=True)
 class _FakeMsg:
     chat_id: int = 42
     text: str = "hello"
+    chat_type: str = ""
 
 
 class _FakeTG:
     def __init__(self) -> None:
         self.actions: list[tuple[int, str]] = []
+        self.drafts: list[tuple[int, int, str]] = []
+        self.fail_drafts = False
 
     async def send_chat_action(self, chat_id: int, action: str = "typing") -> None:
         self.actions.append((chat_id, action))
+
+    async def send_rich_message_draft(
+        self, chat_id: int, draft_id: int, markdown: str
+    ) -> None:
+        self.drafts.append((chat_id, draft_id, markdown))
+        if self.fail_drafts:
+            raise RuntimeError("draft rejected")
 
 
 async def test_execute_agy_returns_reply_and_records_metrics(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -61,3 +71,45 @@ async def test_execute_agy_returns_timeout_reply(monkeypatch: pytest.MonkeyPatch
     text, code = await execute_agy(tg, 42, _FakeMsg(), cs, cfg, "/usr/bin/agy")
     assert code == 124
     assert text == ""
+
+
+async def test_private_chat_streams_drafts_without_typing_heartbeat(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    async def fake_run_agy(**kwargs: Any) -> AgyResult:
+        await kwargs["on_output"]("partial")
+        return AgyResult("complete", 0, "", "SUCCESS")
+
+    monkeypatch.setattr("src.turn.run_agy", fake_run_agy)
+    tg = _FakeTG()
+    cs = ChatState(chat_dir="/tmp/chat", model="")
+    cfg = Config(
+        telegram=TelegramConfig(bot_token="t", allowed_user_ids=[42]),
+        agy=AgyConfig(model="configured-model"),
+    )
+    text, code = await execute_agy(
+        tg, 42, _FakeMsg(chat_type="private"), cs, cfg, "/usr/bin/agy"
+    )
+    assert (text, code) == ("complete", 0)
+    assert tg.actions == []
+    assert tg.drafts[0][2] == "partial"
+
+
+async def test_draft_publisher_throttles_and_keeps_one_id(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    times = iter((0.0, 0.5, 1.1))
+    tg = _FakeTG()
+    publisher = _DraftPublisher(tg, 42, 777, clock=lambda: next(times))
+    await publisher.publish("a")
+    await publisher.publish("ab")
+    await publisher.publish("abc")
+    assert tg.drafts == [(42, 777, "a"), (42, 777, "abc")]
+
+
+async def test_draft_failure_does_not_escape() -> None:
+    tg = _FakeTG()
+    tg.fail_drafts = True
+    publisher = _DraftPublisher(tg, 42, 888, interval=0)
+    await publisher.publish("still running")
+    assert tg.drafts == [(42, 888, "still running")]
