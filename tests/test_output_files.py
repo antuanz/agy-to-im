@@ -37,6 +37,21 @@ def test_does_not_send_existing_file_renamed_to_an_allowed_extension(tmp_path: P
     assert discover_new_outputs(tmp_path, before).files == ()
 
 
+def test_sends_existing_file_overwritten_during_successful_turn(tmp_path: Path) -> None:
+    output = tmp_path / "report.md"
+    output.write_text("incomplete", encoding="utf-8")
+    before = snapshot_workspace_files(tmp_path)
+    output.write_text("completed report", encoding="utf-8")
+    stat = output.stat()
+    os.utime(output, ns=(stat.st_atime_ns, stat.st_mtime_ns + 1))
+
+    found = discover_new_outputs(tmp_path, before)
+
+    assert [(item.filename, item.kind) for item in found.files] == [
+        ("report.md", "document"),
+    ]
+
+
 def test_never_follows_or_sends_a_symlink(tmp_path: Path) -> None:
     if os.name == "nt":
         pytest.skip("Windows symlink creation requires a privilege not present in CI")

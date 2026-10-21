@@ -270,6 +270,10 @@ async def _do_turn(
     except Exception as err:
         LOG.error("sendMessage failed chat=%s: %s", msg.chat_id, err)
     if outputs is not None:
+        LOG.info(
+            "generated output scan chat=%s files=%s skipped=%s",
+            msg.chat_id, len(outputs.files), outputs.skipped,
+        )
         delivery_failed = False
         for output in outputs.files:
             try:

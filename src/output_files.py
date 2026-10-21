@@ -2,7 +2,7 @@
 
 The controller is the only component with a Telegram credential.  It compares
 the shared per-chat workspace before and after a turn and uploads a small,
-conservative allowlist of new files.  Some agy features save their artifacts in
+conservative allowlist of newly created or changed files. Some agy features save their artifacts in
 the worker's isolated ``brain`` directory instead of the current workspace;
 the worker stages those verified new files into the shared workspace first.
 This module deliberately treats scan or copy uncertainty as "send nothing".
@@ -26,22 +26,22 @@ MAX_SCANNED_ENTRIES = 4096
 _PHOTO_EXTENSIONS = frozenset({".jpeg", ".jpg", ".png", ".webp"})
 _EXCLUDED_PARTS = frozenset({".bridge-inbox", ".git", "__pycache__", "okf_memory"})
 
-# Linux exposes stable device/inode pairs. Windows can report both as zero, so
-# use a conservative metadata fallback there; a false non-delivery is safer
-# than returning an existing file.
-FileIdentity = tuple[int, ...]
+# A version includes metadata that changes when an agent overwrites a file in
+# place.  Device/inode alone misses that common editor behaviour.  Excluding
+# ctime avoids treating a harmless rename as a new output.
+FileVersion = tuple[int, ...]
 OutputKind = Literal["photo", "document"]
 
 
 @dataclass(frozen=True)
 class WorkspaceSnapshot:
-    """File identities observed before a CLI turn.
+    """File versions observed before a CLI turn.
 
     ``complete`` is false if an unreadable or unexpectedly large tree makes a
     comparison unreliable.  In that case no output is delivered.
     """
 
-    identities: frozenset[FileIdentity]
+    versions: frozenset[FileVersion]
     complete: bool
 
 
@@ -53,6 +53,7 @@ class OutputFile:
     device: int
     inode: int
     size: int
+    mtime_ns: int
 
 
 @dataclass(frozen=True)
@@ -103,20 +104,20 @@ def _scan_regular_files(root: Path) -> tuple[list[tuple[Path, os.stat_result]], 
         return files, False
 
 
-def _file_identity(item: os.stat_result) -> FileIdentity:
+def _file_version(item: os.stat_result) -> FileVersion:
     if item.st_dev or item.st_ino:
-        return (item.st_dev, item.st_ino)
-    return (item.st_ctime_ns, item.st_mtime_ns, item.st_size)
+        return (item.st_dev, item.st_ino, item.st_mtime_ns, item.st_size)
+    return (item.st_mtime_ns, item.st_size)
 
 
 def snapshot_workspace_files(chat_dir: str | Path) -> WorkspaceSnapshot:
-    """Capture every existing regular-file identity before a CLI turn."""
+    """Capture every existing regular-file version before a CLI turn."""
     root = _safe_root(chat_dir)
     if root is None:
         return WorkspaceSnapshot(frozenset(), False)
     files, complete = _scan_regular_files(root)
-    identities = frozenset(_file_identity(item) for _, item in files)
-    return WorkspaceSnapshot(identities, complete)
+    versions = frozenset(_file_version(item) for _, item in files)
+    return WorkspaceSnapshot(versions, complete)
 
 
 def _is_deliverable_relative_path(relative: Path) -> bool:
@@ -142,12 +143,13 @@ def _safe_filename(path: Path) -> str | None:
 def discover_new_outputs(
     chat_dir: str | Path, before: WorkspaceSnapshot,
 ) -> OutputDiscovery:
-    """Find a bounded allowlist of files with identities absent before the turn.
+    """Find a bounded allowlist of files created or changed during the turn.
 
-    Existing files renamed into an allowed extension retain their inode and are
-    not sent. Symlinks, hard links, hidden/internal paths, and anything beyond
-    the configured size/count limits are ignored. Non-image files are sent as
-    Telegram documents regardless of their extension.
+    Renaming an existing file does not alter its version and is not sent.
+    An in-place rewrite is delivered, which lets an agent repair an output
+    left by an earlier failed turn. Symlinks, hard links, hidden/internal paths,
+    and anything beyond the configured size/count limits are ignored. Non-image
+    files are sent as Telegram documents regardless of their extension.
     """
     if not before.complete:
         return OutputDiscovery((), skipped=True)
@@ -162,8 +164,8 @@ def discover_new_outputs(
     total_bytes = 0
     skipped = False
     for path, item in sorted(files, key=lambda pair: str(pair[0])):
-        identity = _file_identity(item)
-        if identity in before.identities:
+        version = _file_version(item)
+        if version in before.versions:
             continue
         try:
             relative = path.relative_to(root)
@@ -198,12 +200,14 @@ def discover_new_outputs(
             or current.st_dev != item.st_dev
             or current.st_ino != item.st_ino
             or current.st_size != item.st_size
+            or current.st_mtime_ns != item.st_mtime_ns
         ):
             skipped = True
             continue
         accepted.append(OutputFile(
             path=path, filename=filename, kind=kind,
             device=item.st_dev, inode=item.st_ino, size=item.st_size,
+            mtime_ns=item.st_mtime_ns,
         ))
         total_bytes += item.st_size
     return OutputDiscovery(tuple(accepted), skipped)
@@ -252,6 +256,7 @@ def stage_new_outputs(
                 or source_stat.st_dev != output.device
                 or source_stat.st_ino != output.inode
                 or source_stat.st_size != output.size
+                or source_stat.st_mtime_ns != output.mtime_ns
             ):
                 raise OSError("artifact changed after discovery")
             source_flags = os.O_RDONLY | getattr(os, "O_NOFOLLOW", 0)
@@ -264,6 +269,7 @@ def stage_new_outputs(
                     or opened_stat.st_dev != output.device
                     or opened_stat.st_ino != output.inode
                     or opened_stat.st_size != output.size
+                    or opened_stat.st_mtime_ns != output.mtime_ns
                 ):
                     raise OSError("artifact changed while opening")
                 destination_fd = os.open(
@@ -289,6 +295,7 @@ def stage_new_outputs(
             copied.append(OutputFile(
                 path=destination, filename=output.filename, kind=output.kind,
                 device=output.device, inode=output.inode, size=output.size,
+                mtime_ns=output.mtime_ns,
             ))
         except OSError:
             skipped = True

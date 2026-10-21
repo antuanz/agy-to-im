@@ -51,17 +51,17 @@ socket. The worker never receives that credential and starts each CLI child with
 environment.
 
 The active access profile is supplied only by a root-owned server policy. Telegram commands,
-buttons, chat state, and `config.json` cannot select or elevate it. `sandbox` and `workspace`
-always force `agy --mode plan` without `--dangerously-skip-permissions`; only the root-selected
-`host` profile may use unattended tool approval. The production worker uses an OS-level filesystem
-boundary. On VMs where unprivileged user namespaces are blocked, this deliberately replaces the
-CLI's incompatible `--sandbox` flag. See the VM deployment documentation for the root-only profile
-commands and workspace mount templates.
+buttons, chat state, and `config.json` cannot select or elevate it. The root-owned Sandbox policy
+may offer per-chat Plan and Execution choices; Execution remains automatic tool approval only inside
+the existing OS-level Sandbox, never a profile or VM-access change. Workspace and Host execution
+remain server-enforced. On VMs where unprivileged user namespaces are blocked, this OS boundary
+deliberately replaces the CLI's incompatible `--sandbox` flag. See the VM deployment documentation
+for the root-only profile commands and workspace mount templates.
 
 ### Generated files and images
 
-After a successful turn, the controller can return documents and images created by the agent in
-that chat's workspace. Some agy features instead save an artifact beneath the worker's isolated
+After a successful turn, the controller can return documents and images created or changed by the
+agent in that chat's workspace. Some agy features instead save an artifact beneath the worker's isolated
 `brain` directory; the worker copies only files proven new during that same successful turn into
 the chat workspace before the controller scans it. The worker never receives the Telegram token:
 it only writes files, while the token-owning controller performs the upload. Delivery is
@@ -69,7 +69,7 @@ intentionally conservative: it sends at most five new regular files, each no lar
 and 25 MiB in total. Common images (`.jpg`, `.jpeg`, `.png`, `.webp`) are sent as Telegram photos;
 every other eligible file is sent as a Telegram document, regardless of its extension.
 
-The controller compares file identities before and after the turn. It never follows symlinks or
+The controller compares safe file versions before and after the turn. It never follows symlinks or
 sends hard links, pre-existing/renamed files, hidden paths, `.bridge-inbox` uploads, OKF memory,
 or files that exceed the limits. If the comparison cannot be completed safely,
 it sends no generated file. The worker reads artifacts only from its fixed, isolated `brain`
@@ -82,7 +82,7 @@ At controller startup, the bridge registers Telegram's native command menu only
 for every configured `allowed_chat_ids` entry. The menu uses Telegram's
 private-chat-compatible `chat` scope; message authorization remains separately
 enforced for every update against both allowlists. The menu
-contains `/start`, `/help`, `/model`, `/settings`, `/reset`, and `/cancel`. It deliberately
+contains `/start`, `/help`, `/model`, `/mode`, `/settings`, `/reset`, and `/cancel`. It deliberately
 contains no access-profile or execution control: those remain SSH/root-only
 server settings.
 
