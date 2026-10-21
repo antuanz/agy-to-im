@@ -13,6 +13,7 @@ from src.processes import (
     process_group_options as _process_group_options,
     terminate_process_group as _terminate_process_group,
 )
+from src.state import normalize_conversation_id
 
 _STDOUT_CAP_BYTES = 524_288
 _STDERR_CAP_BYTES = 65_536
@@ -30,13 +31,14 @@ class AgyResult:
     exit_code: int
     stderr: str
     status: str = ""
+    conversation_id: str = ""
 
 
 def _build_args(
     *,
     agy_path: str,
     prompt: str,
-    has_session: bool,
+    conversation_id: str,
     model: str,
     mode: str,
     print_timeout: str,
@@ -53,7 +55,11 @@ def _build_args(
         "--output-format",
         "stream-json",
     ]
-    args.append("--continue" if has_session else "--new-project")
+    # Stream-json owns its stdin session. Do not combine it with --new-project
+    # or --continue; a later process resumes a chat only through the documented
+    # opaque --conversation ID returned by the prior terminal result.
+    if conversation_id:
+        args.extend(["--conversation", conversation_id])
     if model:
         args.extend(["--model", model])
     if policy.permits_unattended_tools:
@@ -179,7 +185,7 @@ async def run_agy(
     prompt: str,
     *,
     chat_dir: str,
-    has_session: bool,
+    conversation_id: str,
     model: str,
     mode: str,
     agy_path: str,
@@ -192,7 +198,7 @@ async def run_agy(
     args = _build_args(
         agy_path=agy_path,
         prompt=prompt,
-        has_session=has_session,
+        conversation_id=conversation_id,
         model=model,
         mode=mode,
         print_timeout=print_timeout,
@@ -283,7 +289,10 @@ async def run_agy(
         return AgyResult(events.deltas, 1, _join_errors(stderr, "agy result has no valid response"), "INVALID")
     if len(response.encode("utf-8")) > _FINAL_RESPONSE_CAP_BYTES:
         return AgyResult(events.deltas, 1, _join_errors(stderr, "agy result response exceeded size limit"), "INVALID")
-    return AgyResult(response, 0, stderr, status)
+    return AgyResult(
+        response, 0, stderr, status,
+        normalize_conversation_id(terminal.get("conversation_id")),
+    )
 
 
 def _join_errors(*values: str) -> str:

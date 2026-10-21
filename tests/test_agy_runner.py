@@ -60,7 +60,7 @@ def _fake_agy(tmp_path: Path) -> Path:
                 sys.stdout.write(delta[:middle]); sys.stdout.flush(); time.sleep(0.02)
                 sys.stdout.write(delta[middle:]); sys.stdout.flush()
                 print(json.dumps({"event":"step_update","step_update":{"step_type":"agent_response","text_delta":"world"}}), flush=True)
-                print(json.dumps({"event":"result","result":{"status":"SUCCESS","response":"terminal response"}}), flush=True)
+                print(json.dumps({"event":"result","result":{"status":"SUCCESS","response":"terminal response","conversation_id":"123e4567-e89b-12d3-a456-426614174000"}}), flush=True)
             """
         )
     )
@@ -101,7 +101,7 @@ async def test_streams_only_agent_text_and_sends_user_event(
     result = await run_agy(
         "hello input",
         chat_dir=str(tmp_path),
-        has_session=False,
+        conversation_id="",
         model="",
         mode="code",
         agy_path=str(agy),
@@ -112,6 +112,7 @@ async def test_streams_only_agent_text_and_sends_user_event(
     assert result.exit_code == 0
     assert result.stderr.strip() == "private diagnostic"
     assert result.status == "SUCCESS"
+    assert result.conversation_id == "123e4567-e89b-12d3-a456-426614174000"
     assert updates == ["hello ", "hello world"]
     sent = json.loads((tmp_path / "input.jsonl").read_text())
     assert sent == {"event": "user", "message": {"content": "hello input"}}
@@ -127,7 +128,7 @@ async def test_builds_stream_argv_and_omits_empty_model(
     await run_agy(
         "prompt is not argv",
         chat_dir=str(tmp_path),
-        has_session=True,
+        conversation_id="123e4567-e89b-12d3-a456-426614174000",
         model="",
         mode="plan",
         agy_path=str(agy),
@@ -136,7 +137,9 @@ async def test_builds_stream_argv_and_omits_empty_model(
     assert args[:4] == [
         "--input-format", "stream-json", "--output-format", "stream-json"
     ]
-    assert "--continue" in args
+    assert "--continue" not in args
+    assert "--new-project" not in args
+    assert args[args.index("--conversation") + 1] == "123e4567-e89b-12d3-a456-426614174000"
     assert "--sandbox" not in args
     assert "--model" not in args
     assert "prompt is not argv" not in args
@@ -146,20 +149,21 @@ def test_build_args_includes_exact_selected_model() -> None:
     args = _build_args(
         agy_path="/usr/bin/agy",
         prompt="not-on-argv",
-        has_session=False,
+        conversation_id="",
         model="gemini-4-argon-high",
         mode="code",
         print_timeout="15m",
     )
     assert args[0] == "/usr/bin/agy"
     assert args[args.index("--model") + 1] == "gemini-4-argon-high"
-    assert "--new-project" in args
+    assert "--new-project" not in args
+    assert "--continue" not in args
     assert "-p" not in args
 
 
 def test_sandbox_policy_omits_dangerous_permission_bypass() -> None:
     args = _build_args(
-        agy_path="/usr/bin/agy", prompt="x", has_session=False,
+        agy_path="/usr/bin/agy", prompt="x", conversation_id="",
         model="", mode="code", print_timeout="15m",
     )
     assert "--dangerously-skip-permissions" not in args
@@ -183,7 +187,7 @@ async def test_rejects_non_success_or_missing_terminal_result(
     agy = _fake_agy(tmp_path)
     _env_for_fake(monkeypatch, tmp_path, case)
     result = await run_agy(
-        "x", chat_dir=str(tmp_path), has_session=False, model="", mode="code",
+        "x", chat_dir=str(tmp_path), conversation_id="", model="", mode="code",
         agy_path=str(agy),
     )
     assert result.exit_code != 0
@@ -196,7 +200,7 @@ async def test_terminal_result_is_authoritative_over_deltas(
     agy = _fake_agy(tmp_path)
     _env_for_fake(monkeypatch, tmp_path, "success")
     result = await run_agy(
-        "x", chat_dir=str(tmp_path), has_session=False, model="", mode="code",
+        "x", chat_dir=str(tmp_path), conversation_id="", model="", mode="code",
         agy_path=str(agy),
     )
     assert result.text == "terminal response"
@@ -209,7 +213,7 @@ async def test_timeout_terminates_process_tree(
     agy = _fake_agy(tmp_path)
     _env_for_fake(monkeypatch, tmp_path, "timeout")
     result = await run_agy(
-        "x", chat_dir=str(tmp_path), has_session=False, model="", mode="code",
+        "x", chat_dir=str(tmp_path), conversation_id="", model="", mode="code",
         agy_path=str(agy), timeout=0.15,
     )
     assert result.exit_code == 124
@@ -223,7 +227,7 @@ async def test_cancellation_terminates_process_tree(
     agy = _fake_agy(tmp_path)
     _env_for_fake(monkeypatch, tmp_path, "timeout")
     task = asyncio.create_task(run_agy(
-        "x", chat_dir=str(tmp_path), has_session=False, model="", mode="code",
+        "x", chat_dir=str(tmp_path), conversation_id="", model="", mode="code",
         agy_path=str(agy),
     ))
     await asyncio.sleep(0.15)

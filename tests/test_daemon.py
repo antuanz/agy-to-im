@@ -177,11 +177,13 @@ async def test_run_replies_with_error_when_agy_fails(tmp_path: Path, monkeypatch
     assert "agy error" in text
 
 
-async def test_run_uses_continue_after_first_successful_turn(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
-    calls: list[bool] = []
+async def test_run_records_per_chat_conversation_after_first_successful_turn(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    calls: list[str] = []
 
     async def recording_agy(tg: Any, chat_id: int, msg: Any, cs: Any, cfg: Any, agy_path: str) -> tuple[str, int]:
-        calls.append(cs.has_session)
+        calls.append(cs.conversation_id)
+        cs.conversation_id = "123e4567-e89b-12d3-a456-426614174000"
+        cs.has_session = True
         return "ok", 0
 
     monkeypatch.setattr("src.daemon.execute_agy", recording_agy)
@@ -207,8 +209,7 @@ async def test_run_uses_continue_after_first_successful_turn(tmp_path: Path, mon
         stop_event=stop,
     )
     assert len(calls) == 2
-    assert calls[0] is False
-    assert calls[1] is True
+    assert calls == ["", "123e4567-e89b-12d3-a456-426614174000"]
 
 
 async def test_run_logs_one_line_per_turn(

@@ -20,6 +20,7 @@ async def test_worker_job_streams_drafts_and_final_result(tmp_path: Path) -> Non
     async def handler(reader: asyncio.StreamReader, writer: asyncio.StreamWriter) -> None:
         request = json.loads(await reader.readline())
         assert request["op"] == "run"
+        assert request["conversation_id"] == ""
         for event in (
             {"type": "delta", "text": "hello"},
             {"type": "result", "text": "hello world", "exit_code": 0, "status": "SUCCESS"},
@@ -36,7 +37,7 @@ async def test_worker_job_streams_drafts_and_final_result(tmp_path: Path) -> Non
 
     try:
         result = await run_worker_job(
-            str(socket), prompt="hi", chat_dir=str(tmp_path), has_session=False,
+            str(socket), prompt="hi", chat_dir=str(tmp_path), conversation_id="",
             model="", timeout=1, on_output=on_output,
         )
     finally:
@@ -102,7 +103,7 @@ async def test_worker_job_accepts_only_fixed_failure_reasons(tmp_path: Path) -> 
     server = await asyncio.start_unix_server(handler, path=str(socket))
     try:
         result = await run_worker_job(
-            str(socket), prompt="hello", chat_dir="/tmp/chat", has_session=False,
+            str(socket), prompt="hello", chat_dir="/tmp/chat", conversation_id="",
             model="", timeout=1,
         )
     finally:

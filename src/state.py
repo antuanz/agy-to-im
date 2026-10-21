@@ -1,14 +1,15 @@
 """Atomic JSON-backed bridge state at ~/.antigravity/bridge/state.json.
 
-Per-chat state tracks the chat working directory, whether a session exists,
-model/mode overrides, and turn count. agy resumes sessions by cwd/project,
-so we do not store opaque session UUIDs.
+Per-chat state tracks the chat working directory, model/mode overrides, and
+turn count. Headless agy sessions resume by opaque conversation ID; the
+working directory alone is not a conversation boundary.
 """
 from __future__ import annotations
 
 import json
 import os
 import re
+import uuid
 from dataclasses import asdict, dataclass, field
 from pathlib import Path
 
@@ -29,6 +30,7 @@ _ALLOWED_MODES = frozenset({"", "code", "plan"})
 class ChatState:
     chat_dir: str  # absolute path; verified-on-load to be under chats_root
     has_session: bool = False  # True after first successful agy turn
+    conversation_id: str = ""  # canonical agy UUID, passed only to --conversation
     # None inherits config, "" explicitly asks agy to select its own default.
     model: str | None = None
     mode: str = ""  # "" → use cfg.agy.mode; values: "code" | "plan"
@@ -44,6 +46,16 @@ class State:
 
 def is_valid_model(name: str) -> bool:
     return bool(name) and bool(_MODEL_RE.match(name))
+
+
+def normalize_conversation_id(value: object) -> str:
+    """Return a canonical agy conversation UUID, or an empty safe default."""
+    if not isinstance(value, str):
+        return ""
+    try:
+        return str(uuid.UUID(value))
+    except (ValueError, AttributeError):
+        return ""
 
 
 def _safe_model(raw: object, *, legacy: bool) -> str | None:
@@ -85,9 +97,12 @@ def _safe_chat_state(chats_root: Path, raw: dict, *, legacy: bool) -> ChatState 
         return None
     if not _CHAT_DIR_RE.match(p.name):
         return None
+    conversation_id = normalize_conversation_id(raw.get("conversation_id"))
     return ChatState(
         chat_dir=str(p),
-        has_session=bool(raw.get("has_session", False)),
+        # Older state contained only a Boolean and cannot be resumed safely.
+        has_session=bool(conversation_id),
+        conversation_id=conversation_id,
         model=_safe_model(raw.get("model"), legacy=legacy),
         mode=_safe_mode(raw.get("mode", "")),
         photo_enabled=_safe_bool(raw.get("photo_enabled", True)),
@@ -103,7 +118,7 @@ def load_state(path: Path, chats_root: Path) -> State:
     except json.JSONDecodeError:
         return State()
     chats_raw = raw.get("chats") or {}
-    legacy = raw.get("state_version") != 2
+    legacy = raw.get("state_version") not in {2, 3}
     chats: dict[int, ChatState] = {}
     for k, v in chats_raw.items():
         try:
@@ -125,7 +140,7 @@ def save_state(path: Path, state: State) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
     tmp = path.with_suffix(path.suffix + ".tmp")
     payload = {
-        "state_version": 2,
+        "state_version": 3,
         "last_update_id": state.last_update_id,
         "chats": {str(k): asdict(v) for k, v in state.chats.items()},
     }

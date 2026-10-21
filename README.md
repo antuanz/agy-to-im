@@ -8,7 +8,7 @@
 
 Chat with the [Antigravity CLI](https://antigravity.google) (`agy`) from Telegram.
 
-Forked from `hah23255/kimi-to-im` and adapted to drive Google's `agy` CLI instead of the discontinued `gemini` CLI. Each Telegram chat gets its own `agy` project/working directory so sessions persist across messages while staying isolated from one another.
+Forked from `hah23255/kimi-to-im` and adapted to drive Google's `agy` CLI instead of the discontinued `gemini` CLI. Each Telegram chat gets its own working directory and stores only the opaque `agy` conversation ID needed to resume that chat; chats remain isolated from one another.
 
 **Self-hosted · single-user · Python · systemd-supervised · webhook-ready**
 
@@ -25,7 +25,7 @@ A Telegram bridge daemon for the Google Antigravity CLI (`agy`), allowing persis
 | Feature | Status |
 |---|---|
 | Telegram ↔ `agy` messaging | ✅ |
-| Per-chat project isolation (`--new-project` / `--continue`) | ✅ |
+| Per-chat conversation isolation (`--conversation`) | ✅ |
 | Inline keyboard control panel (`/settings`, `/model`, reset) | ✅ |
 | Dynamic model discovery from `agy models` with stale-selection protection | ✅ |
 | Safe rich Markdown replies with plain-text fallback | ✅ |
@@ -106,7 +106,7 @@ For the full step-by-step guide see `docs/deployment.md`. Day-to-day operations 
 * `/settings` - Inline control panel (model and session reset)
 * `/model [slug]` - Select a currently available model or use the `agy` default
 * `/mode` - Shows that execution access is server-managed; it cannot change it
-* `/reset` - Start a fresh `agy` project for this chat
+* `/reset` - Start a fresh `agy` conversation for this chat
 * `/image on|off` - Toggle photo processing
 * `/files` - List inbox files
 * `/files clean` - Purge all inbox files
@@ -162,7 +162,7 @@ flowchart LR
 | Функция | Статус |
 |---|---|
 | Telegram ↔ `agy` кореспонденция | ✅ |
-| Изолация на проекти за всеки отделен чат (`--new-project` / `--continue`) | ✅ |
+| Изолация на разговори за всеки отделен чат (`--conversation`) | ✅ |
 | Контролен панел с вградена клавиатура (`/settings`, `/model`, `/mode`) | ✅ |
 | Поддръжка на качване на снимки и документи | ✅ |
 | Многопотребителска FIFO опашка за изчакване | ✅ |
@@ -237,7 +237,7 @@ flowchart LR
 
     User -->|съобщение| TG
     TG -->|long-poll / webhook| Bridge
-    Bridge -->|agy -p prompt --continue/--new-project| Agy
+    Bridge -->|agy stream-json + --conversation| Agy
     Agy -->|отговор| Bridge
     Bridge -->|sendMessage| TG
     TG -->|отговор| User

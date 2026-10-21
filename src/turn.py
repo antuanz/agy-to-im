@@ -72,7 +72,7 @@ async def execute_agy(
             # The Telegram controller cannot invoke agy directly in production.
             result = await run_worker_job(
                 worker_socket, prompt=msg.text, chat_dir=cs.chat_dir,
-                has_session=cs.has_session, model=effective_model_value(cs, cfg),
+                conversation_id=cs.conversation_id, model=effective_model_value(cs, cfg),
                 timeout=AGY_TIMEOUT_S, on_output=on_output,
             )
         else:
@@ -80,7 +80,7 @@ async def execute_agy(
             result = await run_agy(
                 prompt=msg.text,
                 chat_dir=cs.chat_dir,
-                has_session=cs.has_session,
+                conversation_id=cs.conversation_id,
                 model=effective_model_value(cs, cfg),
                 # Execution policy is selected by the root-owned service.
                 mode=cfg.access.execution_mode,
@@ -93,6 +93,9 @@ async def execute_agy(
         # controller service. The production worker protocol does not expose it.
         if result.exit_code == 0 and not worker_socket:
             asyncio.create_task(_compile_memory_layer(cs.chat_dir))
+        if result.exit_code == 0 and result.conversation_id:
+            cs.conversation_id = result.conversation_id
+            cs.has_session = True
     finally:
         if publisher is not None:
             await publisher.close()

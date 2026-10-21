@@ -157,8 +157,6 @@ async def _do_turn(
         reply = f"⚠️ agy error (exit {code})"
     else:
         record_turn()
-        if not cs.has_session:
-            cs.has_session = True
         cs.turn_count += 1
         reply = text or "(empty reply)"
     # Post-turn maintenance: update OKF memory layer, clean inbox

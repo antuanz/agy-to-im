@@ -197,6 +197,7 @@ async def handle_text_command(
         )
     if cmd == "/reset":
         cs.has_session = False
+        cs.conversation_id = ""
         return BridgeReply("🧹 Session reset. The next message starts fresh.")
     if cmd == "/thinking":
         mode = args.strip().lower()
@@ -252,6 +253,7 @@ def handle_callback(
         )
     if data == "R":
         cs.has_session = False
+        cs.conversation_id = ""
         rep = _render_settings(cs, cfg)
         return BridgeReply(text=rep.text, keyboard=rep.keyboard, toast="Session reset")
 

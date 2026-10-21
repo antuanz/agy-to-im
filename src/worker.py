@@ -23,7 +23,7 @@ from src.models import (
     parse_model_slugs,
 )
 from src.processes import process_group_options, terminate_process_group
-from src.state import is_valid_model
+from src.state import is_valid_model, normalize_conversation_id
 
 
 LOG = logging.getLogger("antigravity_telegram_worker")
@@ -90,6 +90,13 @@ def _valid_model(value: object) -> str | None:
     return value if isinstance(value, str) and is_valid_model(value) else None
 
 
+def _valid_conversation_id(value: object) -> str | None:
+    if not isinstance(value, str):
+        return None
+    normalized = normalize_conversation_id(value)
+    return normalized if normalized == value else None
+
+
 async def _send(writer: asyncio.StreamWriter, event: dict[str, object]) -> None:
     writer.write(json.dumps(event, ensure_ascii=False).encode("utf-8") + b"\n")
     await writer.drain()
@@ -140,7 +147,8 @@ async def _run_request(request: dict[str, Any], writer: asyncio.StreamWriter) ->
     prompt = _valid_prompt(request.get("prompt"))
     chat_dir = _valid_chat_dir(request.get("chat_dir"))
     model = _valid_model(request.get("model"))
-    if prompt is None or chat_dir is None or model is None or not isinstance(request.get("has_session"), bool):
+    conversation_id = _valid_conversation_id(request.get("conversation_id"))
+    if prompt is None or chat_dir is None or model is None or conversation_id is None:
         await _send(writer, {"type": "error"})
         return
     try:
@@ -154,7 +162,7 @@ async def _run_request(request: dict[str, Any], writer: asyncio.StreamWriter) ->
 
     async with _WORKER_LOCK:
         result = await run_agy(
-            prompt, chat_dir=chat_dir, has_session=request["has_session"], model=model,
+            prompt, chat_dir=chat_dir, conversation_id=conversation_id, model=model,
             mode=policy.execution_mode, agy_path=os.environ.get("AGY_BIN", "agy"),
             timeout=900.0, on_output=on_output, access=policy,
         )
@@ -163,6 +171,7 @@ async def _run_request(request: dict[str, Any], writer: asyncio.StreamWriter) ->
         "type": "result", "text": result.text, "exit_code": result.exit_code,
         "status": result.status,
         "reason": safe_failure_reason(result) if result.exit_code != 0 else "",
+        "conversation_id": result.conversation_id if result.exit_code == 0 else "",
     })
 
 

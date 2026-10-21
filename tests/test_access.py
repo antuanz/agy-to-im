@@ -28,7 +28,7 @@ def test_host_code_is_the_only_permission_bypass() -> None:
         "AGY_BRIDGE_ACCESS_LABEL": "Host access",
     })
     args = _build_args(
-        agy_path="/usr/bin/agy", prompt="x", has_session=False, model="",
+        agy_path="/usr/bin/agy", prompt="x", conversation_id="", model="",
         mode="plan", print_timeout="15m", access=policy,
     )
     assert "--dangerously-skip-permissions" in args

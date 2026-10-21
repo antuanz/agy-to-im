@@ -16,7 +16,7 @@ def test_load_missing_file_returns_zero_state(tmp_path: Path) -> None:
 def test_save_then_load_roundtrip(tmp_path: Path) -> None:
     p = tmp_path / "state.json"
     chat_dir = str(tmp_path / "chats" / "123")
-    cs = ChatState(chat_dir=chat_dir, has_session=True, model="gemini-2.5-pro", mode="plan", turn_count=5)
+    cs = ChatState(chat_dir=chat_dir, has_session=True, conversation_id="123e4567-e89b-12d3-a456-426614174000", model="gemini-2.5-pro", mode="plan", turn_count=5)
     original = State(last_update_id=42, chats={123: cs})
     save_state(p, original)
 
@@ -24,6 +24,7 @@ def test_save_then_load_roundtrip(tmp_path: Path) -> None:
     assert loaded.last_update_id == 42
     assert loaded.chats[123].chat_dir == chat_dir
     assert loaded.chats[123].has_session is True
+    assert loaded.chats[123].conversation_id == "123e4567-e89b-12d3-a456-426614174000"
     assert loaded.chats[123].model == "gemini-2.5-pro"
     assert loaded.chats[123].mode == "plan"
     assert loaded.chats[123].turn_count == 5
@@ -111,3 +112,14 @@ def test_legacy_empty_model_migrates_to_inherit_config(tmp_path: Path) -> None:
     }}}))
     loaded = load_state(path, tmp_path / "chats")
     assert loaded.chats[123].model is None
+
+
+def test_older_boolean_session_state_is_reset_without_a_conversation_id(tmp_path: Path) -> None:
+    path = tmp_path / "state.json"
+    chat_dir = str(tmp_path / "chats" / "123")
+    path.write_text(json.dumps({"state_version": 2, "chats": {"123": {
+        "chat_dir": chat_dir, "has_session": True,
+    }}}))
+    loaded = load_state(path, tmp_path / "chats")
+    assert loaded.chats[123].has_session is False
+    assert loaded.chats[123].conversation_id == ""

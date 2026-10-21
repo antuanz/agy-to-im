@@ -57,7 +57,10 @@ async def test_execute_agy_returns_reply_and_records_metrics(monkeypatch: pytest
     async def fake_run_agy(prompt: str, **kwargs: Any) -> AgyResult:
         calls.append({"prompt": prompt, **kwargs})
         await asyncio.sleep(0.01)
-        return AgyResult(text="reply text", exit_code=0, stderr="")
+        return AgyResult(
+            text="reply text", exit_code=0, stderr="",
+            conversation_id="123e4567-e89b-12d3-a456-426614174000",
+        )
 
     monkeypatch.setattr("src.turn.run_agy", fake_run_agy)
 
@@ -71,6 +74,8 @@ async def test_execute_agy_returns_reply_and_records_metrics(monkeypatch: pytest
     assert tg.actions
     assert calls[0]["prompt"] == "hello"
     assert calls[0]["chat_dir"] == "/tmp/chat"
+    assert cs.conversation_id == "123e4567-e89b-12d3-a456-426614174000"
+    assert cs.has_session is True
 
 
 async def test_execute_agy_returns_timeout_reply(monkeypatch: pytest.MonkeyPatch) -> None:

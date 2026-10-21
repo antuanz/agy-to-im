@@ -7,6 +7,7 @@ from collections.abc import Awaitable, Callable
 
 from src.agy_runner import AgyResult
 from src.diagnostics import SAFE_FAILURE_REASONS
+from src.state import normalize_conversation_id
 
 
 _LINE_LIMIT = 1_048_576
@@ -22,7 +23,7 @@ async def run_worker_job(
     *,
     prompt: str,
     chat_dir: str,
-    has_session: bool,
+    conversation_id: str,
     model: str,
     timeout: float,
     on_output: OutputCallback | None = None,
@@ -35,7 +36,7 @@ async def run_worker_job(
     try:
         request = {
             "op": "run", "prompt": prompt, "chat_dir": chat_dir,
-            "has_session": has_session, "model": model,
+            "conversation_id": conversation_id, "model": model,
         }
         writer.write(json.dumps(request, ensure_ascii=False).encode("utf-8") + b"\n")
         await writer.drain()
@@ -71,7 +72,8 @@ async def run_worker_job(
                         reason if isinstance(reason, str) and reason in SAFE_FAILURE_REASONS
                         else "agy execution failed"
                     ) if exit_code != 0 else ""
-                    return AgyResult(text, exit_code, safe_reason, status)
+                    conversation_id = normalize_conversation_id(event.get("conversation_id"))
+                    return AgyResult(text, exit_code, safe_reason, status, conversation_id)
                 if kind == "error":
                     raise WorkerError("worker rejected the request")
                 raise WorkerError("worker sent an unknown event")
