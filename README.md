@@ -82,9 +82,18 @@ At controller startup, the bridge registers Telegram's native command menu only
 for every configured `allowed_chat_ids` entry. The menu uses Telegram's
 private-chat-compatible `chat` scope; message authorization remains separately
 enforced for every update against both allowlists. The menu
-contains `/start`, `/help`, `/model`, `/settings`, and `/reset`. It deliberately
+contains `/start`, `/help`, `/model`, `/settings`, `/reset`, and `/cancel`. It deliberately
 contains no access-profile or execution control: those remain SSH/root-only
 server settings.
+
+### Turn progress and cancellation
+
+Every agent turn first creates a transient `Thinking…` status message. It updates at a bounded
+ten-second interval until the agent produces its streamed private-chat draft or the turn ends.
+The status is removed before a normal final reply, keeping the chat uncluttered. `/cancel` is
+available only to an authorized chat and stops that chat's active request. Cancellation is sent
+over the worker's Unix socket, which cancels the worker task; the CLI runner then terminates and
+reaps the complete agy process group. It never changes the server-managed access profile.
 
 Restricted profiles also prepend a fixed **Closed Context Mode** instruction to every turn. It
 limits the conversation to user-provided task materials and tells the agent not to inspect or
@@ -145,6 +154,7 @@ For the full step-by-step guide see `docs/deployment.md`. Day-to-day operations 
 * `/model [slug]` - Select a currently available model or use the `agy` default
 * `/mode` - Shows that execution access is server-managed; it cannot change it
 * `/reset` - Start a fresh `agy` conversation for this chat
+* `/cancel` - Stop this chat's active request
 * `/image on|off` - Toggle photo processing
 * `/files` - List inbox files
 * `/files clean` - Purge all inbox files

@@ -74,6 +74,17 @@ async def test_set_my_commands_posts_chat_scoped_safe_menu(httpx_mock: HTTPXMock
     assert payload == {"commands": commands, "scope": scope}
 
 
+async def test_delete_message_posts_the_exact_progress_message(httpx_mock: HTTPXMock) -> None:
+    httpx_mock.add_response(
+        url="https://api.telegram.org/botTOKEN/deleteMessage",
+        method="POST", json={"ok": True, "result": True},
+    )
+    async with TelegramClient("TOKEN") as tg:
+        await tg.delete_message(chat_id=10, message_id=123)
+    payload = json.loads(httpx_mock.get_requests()[0].content)
+    assert payload == {"chat_id": 10, "message_id": 123}
+
+
 async def test_send_chat_action_posts_typing(httpx_mock: HTTPXMock) -> None:
     httpx_mock.add_response(
         url="https://api.telegram.org/botTOKEN/sendChatAction",

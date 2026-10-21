@@ -11,8 +11,8 @@ import pytest
 from src.agy_runner import AgyResult
 from src.config import AgyConfig, Config, TelegramConfig
 import src.daemon as daemon_mod
-from src.daemon import DaemonInfo, run
-from src.models import ModelSnapshot
+from src.daemon import DaemonInfo, _TurnProgress, run
+from src.models import ModelCatalog, ModelSnapshot
 from src.state import ChatState, State, load_state, save_state
 from src.telegram import InboundMessage
 from src.turn import CLOSED_CONTEXT_BLOCKED_EXIT_CODE
@@ -64,6 +64,9 @@ class _FakeTelegram:
     async def edit_message_text(self, chat_id: int, message_id: int, text: str, *, keyboard: Any | None = None) -> None:
         self.sent_messages.append((chat_id, text))
 
+    async def delete_message(self, chat_id: int, message_id: int) -> None:
+        return None
+
     async def answer_callback_query(self, callback_query_id: str, *, text: str = "") -> None:
         return None
 
@@ -105,6 +108,36 @@ def _cfg() -> Config:
     )
 
 
+class _ProgressTelegram(_FakeTelegram):
+    def __init__(self) -> None:
+        super().__init__([], [], [])
+        self.edits: list[tuple[int, int, str]] = []
+        self.deletes: list[tuple[int, int]] = []
+
+    async def send_message(self, chat_id: int, text: str, *, keyboard: Any | None = None) -> int | None:
+        self.sent_messages.append((chat_id, text))
+        return 123
+
+    async def edit_message_text(self, chat_id: int, message_id: int, text: str, *, keyboard: Any | None = None) -> None:
+        self.edits.append((chat_id, message_id, text))
+
+    async def delete_message(self, chat_id: int, message_id: int) -> None:
+        self.deletes.append((chat_id, message_id))
+
+
+async def test_progress_updates_then_removes_transient_status(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr(daemon_mod, "PROGRESS_UPDATE_SECONDS", 0.01)
+    tg = _ProgressTelegram()
+    progress = _TurnProgress(tg, 10)
+    await progress.start()
+    await asyncio.sleep(0.02)
+    await progress.close()
+
+    assert tg.sent_messages[0][1].startswith("⏳ Thinking")
+    assert any("Thinking" in text for _, _, text in tg.edits)
+    assert tg.deletes == [(10, 123)]
+
+
 async def _fake_execute_agy(
     tg: Any, chat_id: int, msg: Any, cs: Any, cfg: Any, agy_path: str,
 ) -> tuple[str, int]:
@@ -135,8 +168,8 @@ async def test_run_replies_to_authorized_message(tmp_path: Path, monkeypatch: py
     )
 
     assert tg.chat_actions and tg.chat_actions[0] == (10, "typing")
-    assert len(tg.sent_messages) == 1
-    chat_id, text = tg.sent_messages[0]
+    assert len(tg.sent_messages) == 2
+    chat_id, text = tg.sent_messages[-1]
     assert chat_id == 10
     assert text == "echo:hello"
 
@@ -166,7 +199,7 @@ async def test_run_registers_menu_only_for_allowlisted_chats(tmp_path: Path) -> 
     assert tg.command_menus is not None
     commands, scope = tg.command_menus[0]
     assert [command["command"] for command in commands] == [
-        "start", "help", "model", "settings", "reset",
+        "start", "help", "model", "settings", "reset", "cancel",
     ]
     assert scope == {"type": "chat", "chat_id": 10}
 
@@ -247,8 +280,8 @@ async def test_run_replies_with_error_when_agy_fails(tmp_path: Path, monkeypatch
         info=DaemonInfo(bot_username="@bot", started_at=0.0, agy_version="1.0"),
         stop_event=stop,
     )
-    assert len(tg.sent_messages) == 1
-    _, text = tg.sent_messages[0]
+    assert len(tg.sent_messages) == 2
+    _, text = tg.sent_messages[-1]
     assert "agy error" in text
 
 
@@ -270,9 +303,9 @@ async def test_run_replies_with_closed_context_message_for_policy_denial(
         stop_event=stop,
     )
 
-    assert tg.sent_messages == [
-        (10, "I can't help with questions about the execution environment.")
-    ]
+    assert tg.sent_messages[-1] == (
+        10, "I can't help with questions about the execution environment."
+    )
 
 
 async def test_run_records_per_chat_conversation_after_first_successful_turn(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
@@ -488,5 +521,42 @@ async def test_turn_queue_is_completed_when_active_turn_raises(
     )
     release.set()
     await task
+    assert daemon_mod._TURN_RUNNER is not None
+    await daemon_mod._TURN_RUNNER
     assert daemon_mod._QUEUE.active is False
     assert daemon_mod._QUEUE.pending == []
+
+
+async def test_cancel_stops_the_active_turn_without_forwarding_a_command(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    daemon_mod._QUEUE.active = False
+    daemon_mod._QUEUE.pending.clear()
+    daemon_mod._ACTIVE_TURN = None
+    daemon_mod._TURN_RUNNER = None
+    started = asyncio.Event()
+
+    async def waiting_turn(*_: Any) -> tuple[str, int]:
+        started.set()
+        await asyncio.Event().wait()
+        return "unreachable", 0
+
+    monkeypatch.setattr("src.daemon.execute_agy", waiting_turn)
+    tg = _FakeTelegram([], [], [])
+    state = State()
+    first = InboundMessage(1, 10, 42, "long task", "private")
+    cancel = InboundMessage(2, 10, 42, "/cancel", "private")
+    await daemon_mod._process_text(
+        first, tg, state, tmp_path / "state.json", tmp_path / "chats", _cfg(),
+        "agy", DaemonInfo("@bot", 0.0, "1.0"), ModelCatalog("agy"),
+    )
+    await asyncio.wait_for(started.wait(), timeout=0.2)
+    await daemon_mod._process_text(
+        cancel, tg, state, tmp_path / "state.json", tmp_path / "chats", _cfg(),
+        "agy", DaemonInfo("@bot", 0.0, "1.0"), ModelCatalog("agy"),
+    )
+    assert daemon_mod._TURN_RUNNER is not None
+    await daemon_mod._TURN_RUNNER
+
+    assert any("Cancelling the active request" in text for _, text in tg.sent_messages)
+    assert daemon_mod._QUEUE.active is False

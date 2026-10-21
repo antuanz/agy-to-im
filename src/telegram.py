@@ -43,6 +43,7 @@ SAFE_COMMAND_MENU: tuple[BotCommand, ...] = (
     {"command": "model", "description": "Choose a model for this chat"},
     {"command": "settings", "description": "Show model and session status"},
     {"command": "reset", "description": "Start a fresh chat session"},
+    {"command": "cancel", "description": "Stop this chat's active request"},
 )
 
 
@@ -317,6 +318,17 @@ class TelegramClient:
             if "not modified" in desc:
                 return
             raise RuntimeError(f"editMessageText failed: {data.get('description')}")
+
+    async def delete_message(self, chat_id: int, message_id: int) -> None:
+        """Remove an expired progress message without affecting the reply."""
+        assert self._client is not None
+        response = await self._client.post(
+            f"{self._base}/deleteMessage",
+            json={"chat_id": chat_id, "message_id": message_id},
+        )
+        data = response.json()
+        if not data.get("ok"):
+            raise RuntimeError(f"deleteMessage failed: {data.get('description')}")
 
     async def answer_callback_query(
         self,

@@ -28,7 +28,8 @@ class TurnQueue:
 
     When a turn is active, subsequent messages are enqueued.
     Each chat may have at most one pending message.
-    Owner (first in allowed_user_ids) always skips the queue.
+    Every allowlisted chat uses the same queue so the worker has at most one
+    active agy process.
     """
     active: bool = False
     pending: list[tuple[int, "InboundMessage", asyncio.Future[str | None]]] = field(default_factory=list)
@@ -68,14 +69,10 @@ class TurnQueue:
         """
         cid = msg.chat_id
 
-        # Owner bypass
-        if cid == self.owner_chat_id:
-            return None
-
         # Already active — enqueue
         if self.active:
             if self._already_queued(cid):
-                return None  # replace previous
+                return "A request for this chat is already queued. Use /cancel to stop the active request."
             if len(self.pending) >= MAX_QUEUE_DEPTH:
                 return "🚫 Queue full. Try again shortly."
             fut: asyncio.Future[str | None] = asyncio.Future()

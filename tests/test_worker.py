@@ -1,8 +1,11 @@
 """Validation tests for the root-supervised worker boundary."""
 from __future__ import annotations
 
+import asyncio
 import json
 from pathlib import Path
+
+import pytest
 
 import src.worker as worker
 from src.models import MODEL_CACHE_TTL_S
@@ -100,13 +103,59 @@ async def test_worker_stages_new_brain_artifacts_only_after_a_successful_turn(
 
     await worker._run_request({
         "prompt": "make image", "chat_dir": str(controller_root / "42"),
-        "model": "", "conversation_id": "",
+        "model": "", "conversation_id": "", "request_id": "a" * 24,
     }, writer)
 
     assert staged == [(
         agent_home / ".gemini/antigravity-cli/brain", worker_root / "42",
     )]
     assert writer.events[-1]["type"] == "result"
+
+
+async def test_worker_cancel_only_stops_the_matching_active_request(monkeypatch, tmp_path: Path) -> None:
+    worker._ACTIVE_REQUESTS.clear()
+    started = asyncio.Event()
+    controller_root = tmp_path / "controller-chats"
+    worker_root = tmp_path / "worker-chats"
+    (controller_root / "42").mkdir(parents=True)
+    (worker_root / "42").mkdir(parents=True)
+    monkeypatch.setenv("AGY_BRIDGE_CONTROLLER_CHATS_ROOT", str(controller_root))
+    monkeypatch.setenv("AGY_BRIDGE_CHATS_ROOT", str(worker_root))
+    monkeypatch.setenv("HOME", str(tmp_path / "home"))
+
+    class Policy:
+        execution_mode = "plan"
+
+    class Writer:
+        def __init__(self) -> None:
+            self.events: list[dict[str, object]] = []
+
+        def write(self, raw: bytes) -> None:
+            self.events.append(json.loads(raw))
+
+        async def drain(self) -> None:
+            pass
+
+    async def slow_run_agy(*_args, **_kwargs) -> AgyResult:
+        started.set()
+        await asyncio.Event().wait()
+        return AgyResult("unreachable", 0, "", "SUCCESS")
+
+    monkeypatch.setattr(worker, "load_access_policy", lambda: Policy())
+    monkeypatch.setattr(worker, "run_agy", slow_run_agy)
+    run_writer = Writer()
+    cancel_writer = Writer()
+    request_id = "b" * 24
+    task = asyncio.create_task(worker._run_request({
+        "prompt": "wait", "chat_dir": str(controller_root / "42"), "model": "",
+        "conversation_id": "", "request_id": request_id,
+    }, run_writer))
+    await asyncio.wait_for(started.wait(), timeout=0.2)
+    await worker._cancel_request({"request_id": request_id}, cancel_writer)
+    with pytest.raises(asyncio.CancelledError):
+        await task
+    assert cancel_writer.events == [{"type": "cancel", "cancelled": True}]
+    assert request_id not in worker._ACTIVE_REQUESTS
 
 
 def test_worker_failure_reason_never_returns_raw_cli_output() -> None:

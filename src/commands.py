@@ -23,7 +23,7 @@ WELCOME_TEXT = (
     "Welcome! I'm your Antigravity bridge bot.\n\n"
     "Send me any message and I'll forward it to the agy CLI. "
     "Each chat has its own session that persists across messages.\n\n"
-    "Commands: /start · /help · /status · /settings · /model · /reset"
+    "Commands: /start · /help · /status · /settings · /model · /reset · /cancel"
 )
 
 HELP_TEXT = (
@@ -34,6 +34,7 @@ HELP_TEXT = (
     "/settings — control panel with buttons\n"
     "/model    — pick a model (per-chat override)\n"
     "/reset    — fresh agy session for this chat\n"
+    "/cancel   — stop this chat's active request\n"
     "/info     — same as /status\n"
     "/image on|off — toggle photo processing\n"
     "/files    — list recent uploads\n"
@@ -56,6 +57,12 @@ def effective_model_value(cs: "ChatState", cfg: "Config") -> str:
     if cs.model is not None:
         return cs.model
     return cfg.agy.model
+
+
+def is_cancel_command(text: str) -> bool:
+    """Recognize Telegram's optional @BotUsername command suffix."""
+    command = text.strip().split(maxsplit=1)[0].lower() if text.strip() else ""
+    return command.partition("@")[0] == "/cancel"
 
 
 def _effective_model(cs: "ChatState", cfg: "Config") -> tuple[str, str]:

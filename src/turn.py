@@ -71,6 +71,7 @@ async def execute_agy(
     on_output = None
     if is_private:
         publisher = _DraftPublisher(tg, chat_id, secrets.randbits(63) or 1)
+    if publisher is not None:
         on_output = publisher.publish
     else:
         hb_stop = asyncio.Event()

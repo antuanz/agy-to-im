@@ -110,3 +110,39 @@ async def test_worker_job_accepts_only_fixed_failure_reasons(tmp_path: Path) -> 
         server.close()
         await server.wait_closed()
     assert result.stderr == "authentication unavailable"
+
+
+async def test_cancelling_a_worker_job_sends_its_opaque_cancel_request(tmp_path: Path) -> None:
+    socket = tmp_path / "worker.sock"
+    run_started = asyncio.Event()
+    cancelled = asyncio.Event()
+    seen_request_id = ""
+
+    async def handler(reader: asyncio.StreamReader, writer: asyncio.StreamWriter) -> None:
+        nonlocal seen_request_id
+        request = json.loads(await reader.readline())
+        if request["op"] == "run":
+            seen_request_id = request["request_id"]
+            run_started.set()
+            await reader.read()
+        else:
+            assert request == {"op": "cancel", "request_id": seen_request_id}
+            cancelled.set()
+            writer.write(b'{"type":"cancel","cancelled":true}\n')
+            await writer.drain()
+        writer.close()
+
+    server = await asyncio.start_unix_server(handler, path=str(socket))
+    try:
+        task = asyncio.create_task(run_worker_job(
+            str(socket), prompt="hi", chat_dir=str(tmp_path), conversation_id="",
+            model="", timeout=30,
+        ))
+        await asyncio.wait_for(run_started.wait(), timeout=0.2)
+        task.cancel()
+        with pytest.raises(asyncio.CancelledError):
+            await task
+        await asyncio.wait_for(cancelled.wait(), timeout=0.2)
+    finally:
+        server.close()
+        await server.wait_closed()

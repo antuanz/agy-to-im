@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import asyncio
 import json
+import secrets
 from collections.abc import Awaitable, Callable
 
 from src.agy_runner import AgyResult
@@ -18,6 +19,33 @@ class WorkerError(RuntimeError):
     """The server-managed worker could not accept or complete a job."""
 
 
+async def _cancel_worker_job(socket_path: str, request_id: str) -> None:
+    """Best-effort cancellation on a separate connection.
+
+    The run connection is busy streaming a turn, so cancellation must use a
+    new Unix-socket request.  Failure is harmless: the caller is already being
+    cancelled and the worker still enforces its normal timeout.
+    """
+    try:
+        reader, writer = await asyncio.wait_for(
+            asyncio.open_unix_connection(socket_path, limit=_LINE_LIMIT), timeout=2.0,
+        )
+    except (OSError, asyncio.TimeoutError):
+        return
+    try:
+        writer.write(json.dumps({"op": "cancel", "request_id": request_id}).encode("utf-8") + b"\n")
+        await writer.drain()
+        await asyncio.wait_for(reader.readline(), timeout=2.0)
+    except (OSError, asyncio.TimeoutError):
+        pass
+    finally:
+        writer.close()
+        try:
+            await writer.wait_closed()
+        except OSError:
+            pass
+
+
 async def run_worker_job(
     socket_path: str,
     *,
@@ -29,6 +57,7 @@ async def run_worker_job(
     on_output: OutputCallback | None = None,
 ) -> AgyResult:
     """Run one job without giving the Telegram controller agy access."""
+    request_id = secrets.token_urlsafe(24)
     try:
         reader, writer = await asyncio.open_unix_connection(socket_path, limit=_LINE_LIMIT)
     except OSError as exc:
@@ -37,6 +66,7 @@ async def run_worker_job(
         request = {
             "op": "run", "prompt": prompt, "chat_dir": chat_dir,
             "conversation_id": conversation_id, "model": model,
+            "request_id": request_id,
         }
         writer.write(json.dumps(request, ensure_ascii=False).encode("utf-8") + b"\n")
         await writer.drain()
@@ -84,6 +114,9 @@ async def run_worker_job(
             return AgyResult("", 124, "worker timed out", "TIMEOUT")
         except WorkerError:
             return AgyResult("", 1, "worker protocol error", "ERROR")
+        except asyncio.CancelledError:
+            await _cancel_worker_job(socket_path, request_id)
+            raise
     finally:
         writer.close()
         try:

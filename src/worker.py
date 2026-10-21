@@ -39,6 +39,7 @@ _WORKER_LOCK = asyncio.Lock()
 _MODEL_CACHE: tuple[str, ...] = ()
 _MODEL_CACHE_AT = 0.0
 _ARTIFACTS_RELATIVE_PATH = Path(".gemini/antigravity-cli/brain")
+_ACTIVE_REQUESTS: dict[str, asyncio.Task[object]] = {}
 
 
 def _socket_path() -> Path:
@@ -97,6 +98,13 @@ def _valid_conversation_id(value: object) -> str | None:
         return None
     normalized = normalize_conversation_id(value)
     return normalized if normalized == value else None
+
+
+def _valid_request_id(value: object) -> str | None:
+    """Accept only a bounded opaque identifier supplied by the controller."""
+    if not isinstance(value, str) or not 16 <= len(value) <= 128:
+        return None
+    return value if value.isascii() and value.replace("-", "").replace("_", "").isalnum() else None
 
 
 def _artifact_root() -> Path | None:
@@ -165,7 +173,11 @@ async def _run_request(request: dict[str, Any], writer: asyncio.StreamWriter) ->
     chat_dir = _valid_chat_dir(request.get("chat_dir"))
     model = _valid_model(request.get("model"))
     conversation_id = _valid_conversation_id(request.get("conversation_id"))
-    if prompt is None or chat_dir is None or model is None or conversation_id is None:
+    request_id = _valid_request_id(request.get("request_id"))
+    if (
+        prompt is None or chat_dir is None or model is None
+        or conversation_id is None or request_id is None
+    ):
         await _send(writer, {"type": "error"})
         return
     try:
@@ -177,30 +189,48 @@ async def _run_request(request: dict[str, Any], writer: asyncio.StreamWriter) ->
     async def on_output(text: str) -> None:
         await _send(writer, {"type": "delta", "text": text})
 
-    artifact_root = _artifact_root()
-    artifact_before = (
-        snapshot_workspace_files(artifact_root)
-        if artifact_root is not None else WorkspaceSnapshot(frozenset(), False)
-    )
-    async with _WORKER_LOCK:
-        result = await run_agy(
-            prompt, chat_dir=chat_dir, conversation_id=conversation_id, model=model,
-            mode=policy.execution_mode, agy_path=os.environ.get("AGY_BIN", "agy"),
-            timeout=900.0, on_output=on_output, access=policy,
+    current = asyncio.current_task()
+    if current is None:
+        await _send(writer, {"type": "error"})
+        return
+    _ACTIVE_REQUESTS[request_id] = current
+    try:
+        artifact_root = _artifact_root()
+        artifact_before = (
+            snapshot_workspace_files(artifact_root)
+            if artifact_root is not None else WorkspaceSnapshot(frozenset(), False)
         )
-    # Image generation and other agy features can save output under the
-    # worker-only brain directory instead of cwd.  Stage only files proven new
-    # during this successful turn; the controller will still apply its normal
-    # bounded upload checks to the shared chat workspace.
-    if result.exit_code == 0 and artifact_root is not None:
-        stage_new_outputs(artifact_root, artifact_before, chat_dir)
-    # stderr may contain credentials, paths, or prompt fragments; never transfer it.
-    await _send(writer, {
-        "type": "result", "text": result.text, "exit_code": result.exit_code,
-        "status": result.status,
-        "reason": safe_failure_reason(result) if result.exit_code != 0 else "",
-        "conversation_id": result.conversation_id if result.exit_code == 0 else "",
-    })
+        async with _WORKER_LOCK:
+            result = await run_agy(
+                prompt, chat_dir=chat_dir, conversation_id=conversation_id, model=model,
+                mode=policy.execution_mode, agy_path=os.environ.get("AGY_BIN", "agy"),
+                timeout=900.0, on_output=on_output, access=policy,
+            )
+        # Image generation and other agy features can save output under the
+        # worker-only brain directory instead of cwd.  Stage only files proven new
+        # during this successful turn; the controller will still apply its normal
+        # bounded upload checks to the shared chat workspace.
+        if result.exit_code == 0 and artifact_root is not None:
+            stage_new_outputs(artifact_root, artifact_before, chat_dir)
+        # stderr may contain credentials, paths, or prompt fragments; never transfer it.
+        await _send(writer, {
+            "type": "result", "text": result.text, "exit_code": result.exit_code,
+            "status": result.status,
+            "reason": safe_failure_reason(result) if result.exit_code != 0 else "",
+            "conversation_id": result.conversation_id if result.exit_code == 0 else "",
+        })
+    finally:
+        _ACTIVE_REQUESTS.pop(request_id, None)
+
+
+async def _cancel_request(request: dict[str, Any], writer: asyncio.StreamWriter) -> None:
+    request_id = _valid_request_id(request.get("request_id"))
+    task = _ACTIVE_REQUESTS.get(request_id or "")
+    if task is None or task.done():
+        await _send(writer, {"type": "cancel", "cancelled": False})
+        return
+    task.cancel()
+    await _send(writer, {"type": "cancel", "cancelled": True})
 
 
 async def _handle(reader: asyncio.StreamReader, writer: asyncio.StreamWriter) -> None:
@@ -219,6 +249,8 @@ async def _handle(reader: asyncio.StreamReader, writer: asyncio.StreamWriter) ->
         op = request.get("op")
         if op == "run":
             await _run_request(request, writer)
+        elif op == "cancel":
+            await _cancel_request(request, writer)
         elif op == "models":
             async with _WORKER_LOCK:
                 models, error = await _discover_models()

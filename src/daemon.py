@@ -17,6 +17,7 @@ from src.commands import (
     effective_model_value,
     handle_callback,
     handle_text_command,
+    is_cancel_command,
 )
 from src.config import Config, load_config
 from src.health import memory_healthy, record_error, record_turn, start_server
@@ -41,6 +42,9 @@ DEFAULT_AGY_BIN = "agy"
 LONG_POLL_TIMEOUT = 30
 AGY_TIMEOUT_S = 900.0
 _QUEUE = TurnQueue()
+_TURN_RUNNER: asyncio.Task[None] | None = None
+_ACTIVE_TURN: "_ActiveTurn | None" = None
+PROGRESS_UPDATE_SECONDS = 10.0
 
 
 class _TelegramLike(Protocol):
@@ -61,6 +65,7 @@ class _TelegramLike(Protocol):
     async def edit_message_text(
         self, chat_id: int, message_id: int, text: str, *, keyboard: Any | None = None
     ) -> None: ...
+    async def delete_message(self, chat_id: int, message_id: int) -> None: ...
     async def answer_callback_query(self, callback_query_id: str, *, text: str = "") -> None: ...
     async def send_chat_action(self, chat_id: int, action: str = "typing") -> None: ...
     async def send_document(self, chat_id: int, path: Path, filename: str) -> None: ...
@@ -75,6 +80,75 @@ class DaemonInfo:
     bot_username: str
     started_at: float
     agy_version: str
+
+
+@dataclass
+class _ActiveTurn:
+    chat_id: int
+    task: asyncio.Task[None]
+
+
+class _TurnProgress:
+    """A bounded visible status while a turn has no response text yet."""
+
+    def __init__(self, tg: _TelegramLike, chat_id: int) -> None:
+        self._tg = tg
+        self._chat_id = chat_id
+        self._started_at = time.monotonic()
+        self._message_id: int | None = None
+        self._stop = asyncio.Event()
+        self._task: asyncio.Task[None] | None = None
+
+    async def start(self) -> None:
+        try:
+            self._message_id = await self._tg.send_message(
+                self._chat_id,
+                "⏳ Thinking… (0s)\nSend /cancel to stop this request.",
+            )
+        except Exception:
+            return
+        if self._message_id is not None:
+            self._task = asyncio.create_task(self._refresh())
+
+    async def close(self, *, cancelled: bool = False) -> None:
+        self._stop.set()
+        if self._task is not None:
+            self._task.cancel()
+            await asyncio.gather(self._task, return_exceptions=True)
+        if self._message_id is None:
+            return
+        try:
+            if cancelled:
+                await self._tg.edit_message_text(
+                    self._chat_id, self._message_id, "🛑 Request cancelled."
+                )
+            else:
+                await self._tg.delete_message(self._chat_id, self._message_id)
+        except Exception:
+            # Progress is a convenience; it must not delay or suppress a reply.
+            pass
+
+    def _text(self) -> str:
+        elapsed = int(time.monotonic() - self._started_at)
+        return f"⏳ Thinking… ({elapsed}s)\nSend /cancel to stop this request."
+
+    async def _refresh(self) -> None:
+        try:
+            while not self._stop.is_set():
+                try:
+                    await asyncio.wait_for(self._stop.wait(), PROGRESS_UPDATE_SECONDS)
+                    return
+                except asyncio.TimeoutError:
+                    pass
+                if self._message_id is not None:
+                    try:
+                        await self._tg.edit_message_text(
+                            self._chat_id, self._message_id, self._text()
+                        )
+                    except Exception:
+                        pass
+        except asyncio.CancelledError:
+            return
 
 
 def _resolve_agy_path() -> str:
@@ -153,13 +227,20 @@ async def _do_turn(
         await tg.send_chat_action(msg.chat_id, "typing")
     except Exception:
         pass
+    progress = _TurnProgress(tg, msg.chat_id)
+    await progress.start()
     # Capture the state after inbound media has been put in .bridge-inbox, so
     # an uploaded input cannot be renamed and returned as a new agent output.
     output_before = snapshot_workspace_files(cs.chat_dir)
     execution_msg = replace(msg, text=prompt)
-    text, code = await execute_agy(
-        tg, msg.chat_id, execution_msg, cs, cfg, agy_path
-    )
+    try:
+        text, code = await execute_agy(
+            tg, msg.chat_id, execution_msg, cs, cfg, agy_path,
+        )
+    except asyncio.CancelledError:
+        await progress.close(cancelled=True)
+        return
+    await progress.close()
     if code == CLOSED_CONTEXT_BLOCKED_EXIT_CODE:
         # A denied Sandbox/Workspace tool action is an expected policy outcome,
         # not an operational error to expose as a raw agy exit code.
@@ -209,6 +290,56 @@ async def _do_turn(
                 LOG.warning("generated output warning failed chat=%s", msg.chat_id)
 
 
+async def _run_turns(
+    first: InboundMessage, tg: _TelegramLike, state: State,
+    state_path: Path, chats_root: Path, cfg: Config,
+    agy_path: str, catalog: ModelCatalog,
+) -> None:
+    """Run the active turn and then drain the FIFO without blocking polling."""
+    global _ACTIVE_TURN, _TURN_RUNNER
+    current = first
+    current_future: asyncio.Future[str | None] | None = None
+    try:
+        while True:
+            cs = _ensure_chat_state(state, current.chat_id, chats_root)
+            task = asyncio.create_task(_do_turn(current, tg, cs, cfg, agy_path, catalog))
+            _ACTIVE_TURN = _ActiveTurn(current.chat_id, task)
+            try:
+                await task
+            except asyncio.CancelledError:
+                # A user cancellation is an expected terminal outcome. The
+                # active task either updates its progress message or the
+                # /cancel acknowledgement tells the user what happened.
+                pass
+            except Exception as exc:
+                LOG.exception("turn crashed chat=%s", current.chat_id)
+                if current_future is not None and not current_future.done():
+                    current_future.set_exception(exc)
+            else:
+                if current_future is not None and not current_future.done():
+                    current_future.set_result(None)
+            finally:
+                _ACTIVE_TURN = None
+                _QUEUE.complete()
+            next_item = _QUEUE.next()
+            if next_item is None:
+                break
+            current, current_future = next_item
+    finally:
+        _ACTIVE_TURN = None
+        _TURN_RUNNER = None
+        save_state(state_path, state)
+
+
+async def _cancel_active_turn(msg: InboundMessage, tg: _TelegramLike) -> None:
+    active = _ACTIVE_TURN
+    if active is None or active.chat_id != msg.chat_id or active.task.done():
+        await tg.send_message(msg.chat_id, "There is no active request in this chat.")
+        return
+    active.task.cancel()
+    await tg.send_message(msg.chat_id, "🛑 Cancelling the active request…")
+
+
 async def _process_text(
     msg: InboundMessage, tg: _TelegramLike, state: State,
     state_path: Path, chats_root: Path, cfg: Config,
@@ -216,6 +347,10 @@ async def _process_text(
 ) -> None:
     if not is_authorized(msg, cfg.telegram):
         LOG.info("drop unauth user=%s", msg.user_id)
+        return
+
+    if is_cancel_command(msg.text):
+        await _cancel_active_turn(msg, tg)
         return
 
     cs = _ensure_chat_state(state, msg.chat_id, chats_root)
@@ -240,33 +375,10 @@ async def _process_text(
     if status is not None:
         await tg.send_message(msg.chat_id, status)
         return
-
-    try:
-        await _do_turn(msg, tg, cs, cfg, agy_path, catalog)
-    except Exception:
-        LOG.exception("turn crashed chat=%s", msg.chat_id)
-    finally:
-        _QUEUE.complete()
-
-    while True:
-        next_item = _QUEUE.next()
-        if next_item is None:
-            break
-        nxt_msg, nxt_fut = next_item
-        nxt_cs = _ensure_chat_state(state, nxt_msg.chat_id, chats_root)
-        try:
-            await _do_turn(nxt_msg, tg, nxt_cs, cfg, agy_path, catalog)
-        except Exception as exc:
-            LOG.exception("queued turn crashed chat=%s", nxt_msg.chat_id)
-            if not nxt_fut.done():
-                nxt_fut.set_exception(exc)
-        else:
-            if not nxt_fut.done():
-                nxt_fut.set_result(None)
-        finally:
-            _QUEUE.complete()
-
-    save_state(state_path, state)
+    global _TURN_RUNNER
+    _TURN_RUNNER = asyncio.create_task(
+        _run_turns(msg, tg, state, state_path, chats_root, cfg, agy_path, catalog)
+    )
 
 
 async def _process_callback(
