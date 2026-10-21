@@ -35,6 +35,21 @@ def _fake_agy(tmp_path: Path) -> Path:
                 marker = os.environ["CHILD_MARKER"]
                 subprocess.Popen([sys.executable, "-c", "import pathlib,time,sys; time.sleep(1); pathlib.Path(sys.argv[1]).write_text('alive')", marker])
                 time.sleep(30)
+            elif case == "requires_open_input":
+                # The real CLI is a continuous stream session.  Detect the
+                # historical bug where the parent closed stdin before the
+                # current turn had produced its result.
+                import threading
+                eof = []
+                def observe_close():
+                    eof.append(sys.stdin.read(1))
+                observer = threading.Thread(target=observe_close, daemon=True)
+                observer.start()
+                time.sleep(0.1)
+                if eof:
+                    sys.exit(1)
+                print(json.dumps({"event":"result","result":{"status":"SUCCESS","response":"open input","conversation_id":"123e4567-e89b-12d3-a456-426614174000"}}), flush=True)
+                observer.join()
             elif case == "non_success":
                 print(json.dumps({"event":"step_update","step_update":{"step_type":"agent_response","text_delta":"partial"}}), flush=True)
                 print(json.dumps({"event":"result","result":{"status":"ERROR","error":"failed"}}), flush=True)
@@ -205,6 +220,19 @@ async def test_terminal_result_is_authoritative_over_deltas(
     )
     assert result.text == "terminal response"
     assert result.text != "hello world"
+
+
+async def test_keeps_stream_input_open_until_current_result(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    agy = _fake_agy(tmp_path)
+    _env_for_fake(monkeypatch, tmp_path, "requires_open_input")
+    result = await run_agy(
+        "x", chat_dir=str(tmp_path), conversation_id="", model="", mode="code",
+        agy_path=str(agy),
+    )
+    assert result.exit_code == 0
+    assert result.text == "open input"
 
 
 async def test_timeout_terminates_process_tree(

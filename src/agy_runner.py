@@ -176,6 +176,11 @@ async def _read_events(
                 if terminal is not None:
                     error = error or "agy emitted multiple terminal results"
                 terminal = result
+                # A stream-json process remains alive to accept another user
+                # event.  The caller must receive this turn's terminal result
+                # before it closes stdin; waiting for EOF here would deadlock
+                # a one-turn bridge invocation.
+                return _StreamEvents("".join(pieces), terminal, error)
             else:
                 error = error or "agy emitted an invalid terminal result"
     return _StreamEvents("".join(pieces), terminal, error)
@@ -226,45 +231,44 @@ async def run_agy(
         {"event": "user", "message": {"content": prompt}},
         ensure_ascii=False,
     ).encode("utf-8") + b"\n"
-    try:
-        try:
-            proc.stdin.write(payload)
-            await proc.stdin.drain()
-        except (BrokenPipeError, ConnectionResetError):
-            pass
-        finally:
-            proc.stdin.close()
-            try:
-                await proc.stdin.wait_closed()
-            except (BrokenPipeError, ConnectionResetError):
-                pass
-    except asyncio.CancelledError:
-        await _terminate_process_group(proc)
-        raise
-
     event_task = asyncio.create_task(_read_events(proc.stdout, on_output))
     stderr_task = asyncio.create_task(_read_stderr(proc.stderr))
     wait_task = asyncio.create_task(proc.wait())
-
-    async def _finish() -> tuple[_StreamEvents, tuple[str, bool], int]:
-        events, stderr_result, exit_code = await asyncio.gather(
-            event_task, stderr_task, wait_task
-        )
-        return events, stderr_result, exit_code
-
-    finish_task = asyncio.create_task(_finish())
     try:
-        events, stderr_result, exit_code = await asyncio.wait_for(
-            asyncio.shield(finish_task), timeout=timeout
-        )
+        # Keep stdin open until the terminal result for this turn.  In the
+        # pinned CLI, stream-json denotes a continuous session: closing stdin
+        # immediately after writing makes the process wait indefinitely on
+        # some supported releases instead of completing the submitted turn.
+        proc.stdin.write(payload)
+        await proc.stdin.drain()
+        events = await asyncio.wait_for(asyncio.shield(event_task), timeout=timeout)
     except asyncio.TimeoutError:
         await _terminate_process_group(proc)
-        await asyncio.gather(finish_task, return_exceptions=True)
+        await asyncio.gather(event_task, stderr_task, wait_task, return_exceptions=True)
         return AgyResult("", 124, f"agy timed out after {timeout}s", "TIMEOUT")
     except asyncio.CancelledError:
         await _terminate_process_group(proc)
-        await asyncio.gather(finish_task, return_exceptions=True)
+        await asyncio.gather(event_task, stderr_task, wait_task, return_exceptions=True)
         raise
+
+    # A result ends this bridge turn, not the CLI's stream-json session.  Close
+    # its input only now, then give it a short bounded grace period to exit.
+    # If it keeps the session open, terminate its process group after the
+    # authoritative terminal result has been received.
+    try:
+        proc.stdin.close()
+        await proc.stdin.wait_closed()
+    except (BrokenPipeError, ConnectionResetError):
+        pass
+    forced_shutdown = False
+    try:
+        await asyncio.wait_for(asyncio.shield(wait_task), timeout=3.0)
+    except asyncio.TimeoutError:
+        forced_shutdown = True
+        await _terminate_process_group(proc)
+        await asyncio.gather(wait_task, return_exceptions=True)
+    stderr_result = await stderr_task
+    exit_code = 0 if forced_shutdown and events.terminal is not None else proc.returncode
 
     stderr, stderr_exceeded = stderr_result
     terminal = events.terminal
